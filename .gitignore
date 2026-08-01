@@ -18,3 +18,7 @@ tmp/
 !.vscode/extensions.json
 .DS_Store
 Thumbs.db
+
+# Python Bytecode
+__pycache__/
+*.pyc
