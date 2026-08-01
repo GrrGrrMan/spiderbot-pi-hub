@@ -1,0 +1,15 @@
+# Linux shell scripts (Must be LF so Raspberry Pi can execute them)
+*.sh text eol=lf
+
+# Environment and Config files
+*.conf text eol=lf
+*.env text eol=lf
+*.env.example text eol=lf
+*.acl text eol=lf
+
+# Entire pi-hub configuration & setup folder (handles files without extension like Nginx config)
+pi-hub/conf/* text eol=lf
+config/* text eol=lf
+
+# Markdown files
+*.md text eol=lf

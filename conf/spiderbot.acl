@@ -1,0 +1,8 @@
+# One shared local-control user for the ESP and trusted controllers.
+# Tighten this into separate device/controller users later if needed.
+
+user spiderbot
+topic readwrite alphaesp32/#
+topic readwrite alphaesp32s3/#
+topic readwrite beanspiderbot/#
+topic readwrite spiderbot/s3/#

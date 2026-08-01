@@ -1,0 +1,20 @@
+# Credentials & Secrets
+*.env
+**/*.env
+!*.env.example
+!**/*.env.example
+conf/pi_hub.conf
+!conf/pi_hub.conf.example
+
+# Runtime & Logs
+*.log
+tmp/
+
+# IDE & System
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db

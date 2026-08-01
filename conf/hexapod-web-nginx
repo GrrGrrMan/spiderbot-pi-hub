@@ -1,0 +1,36 @@
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+
+    # 🛑 1. THE SECURITY ACLs (Access Control Lists)
+    allow 127.0.0.1/32;     # Allow Localhost (internal)
+    allow 192.168.4.0/24;   # Allow the USB Dongle Hotspot Subnet
+    allow 100.64.0.0/10;    # Allow Tailscale Mesh VPN Subnet
+    deny all;               # DROP EVERYTHING ELSE (e.g., 192.168.1.x home LAN)
+
+    # 🚀 2. THE WEBSOCKET PROXY (50Hz Streaming)
+    location /socket.io/ {
+        proxy_pass http://127.0.0.1:5000;
+        
+        # Critical WebSocket Upgrade Headers
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "Upgrade";
+        
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_addrs;
+        
+        # Disable buffering to preserve sub-millisecond network timing
+        proxy_buffering off;
+        proxy_read_timeout 86400;
+    }
+
+    # 🕸️ 3. THE REACT UI + DIAGNOSTIC API PROXY
+    location / {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
