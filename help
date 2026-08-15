@@ -1,0 +1,10 @@
+# Avahi MQTT Service Discovery - Quick Start
+#
+# 1. Make the installer executable:
+chmod +x install-mqtt-service.sh
+#
+# 2. Run it:
+./install-mqtt-service.sh
+#
+# This deploys conf/mqtt.service to /etc/avahi/services/ and restarts avahi-daemon.
+# The Pi will then broadcast _mqtt._tcp on port 1883 for mDNS discovery.
