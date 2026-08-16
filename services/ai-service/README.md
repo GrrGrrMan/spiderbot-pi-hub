@@ -30,7 +30,9 @@ web-ui mic ──(16 kHz WAV base64)──> hexapod/{id}/ai     │  ai_service.
 
 ```sh
 sudo ./deploy/install-ai-service.sh
-sudo nano /etc/hexapod-ai/groq.key      # one line: sk-...   (chmod 600 set inline)
+sudo nano /etc/hexapod-ai/groq.key      # one line: sk-...
+sudo chown spider:spider /etc/hexapod-ai/groq.key   # service runs as spider (unreadable root:600 = LLM stays offline)
+sudo systemctl restart hexapod-ai
 systemctl status hexapod-ai
 ```
 

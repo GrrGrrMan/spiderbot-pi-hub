@@ -186,6 +186,7 @@ class AIService:
                     "provider": "groq" if self.llm else "none",
                     "model": (self.llm.model if self.llm else None),
                     "status": (self.llm.status if self.llm else "offline"),
+                    "error": (self.llm.last_error if self.llm else None),
                 },
                 "stt": bool(self.stt),
                 "tts": bool(self.tts),

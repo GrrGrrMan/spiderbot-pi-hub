@@ -29,6 +29,7 @@ if [ ! -f /etc/hexapod-ai/groq.key ]; then
   echo ""
   echo "!!! No Groq key yet. Create it with:"
   echo "      sudo nano /etc/hexapod-ai/groq.key   (one line: sk-...)"
+  echo "      sudo chown spider:spider /etc/hexapod-ai/groq.key   (service runs as spider)"
   echo "      sudo chmod 600 /etc/hexapod-ai/groq.key"
 fi
 if [ ! -f /etc/hexapod-ai/ai.env ]; then
