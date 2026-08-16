@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # pi-hub/services/ai-service/deploy/install-ai-service.sh
 # Idempotent installer for the P5 AI voice service on the RPi.
-#   ssh spider@spiderbot-j.local  (or run on the Pi)
+#   ssh spider@spider-w.local  (or run on the Pi)
 #   cd <repo>/pi-hub/services/ai-service
 #   sudo ./deploy/install-ai-service.sh
 set -euo pipefail
