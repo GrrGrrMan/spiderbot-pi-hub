@@ -47,8 +47,8 @@ class Pipeline:
         if action:
             return PipelineResult(action=action, reply=action.get("reply", ""))
 
-        # 2) remote LLM (only when confident it can respond; falls through on error)
-        if self.llm and self.llm.is_available():
+        # 2) remote LLM (attempt on "online" or first/unknown; fall through on error)
+        if self.llm and self.llm.status != "offline":
             try:
                 action_id, reply = self.llm.chat(self.actions, text, history=history or [], system=SYSTEM_PROMPT)
                 if action_id:
@@ -86,7 +86,7 @@ class Pipeline:
 
         if result.reply:
             on_ai_reply(result.reply)
-            on_tts(result.reply)
+            on_tts_text(result.reply)
 
     def _schedule_stop(self, delay_ms, stop_payload, on_cmd):
         def stop():

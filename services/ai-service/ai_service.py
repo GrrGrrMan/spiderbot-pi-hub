@@ -111,13 +111,16 @@ class AIService:
         if not reply:
             return
         self._publish(self.topic_ai, {"type": "text", "role": "assistant", "content": reply})
-        if self.tts and self.tts.available():
-            try:
-                wav = self.tts.synthesize_wav_bytes(reply)
-                for frame in self.tts.frames(wav):
-                    self._publish(self.topic_audio, frame, qos=0)
-            except Exception as e:
-                log.error("TTS synthesize failed: %s", e)
+
+    def _on_tts_text(self, reply):
+        if not reply or not self.tts or not self.tts.available():
+            return
+        try:
+            wav = self.tts.synthesize_wav_bytes(reply)
+            for frame in self.tts.frames(wav):
+                self._publish(self.topic_audio, frame, qos=0)
+        except Exception as e:
+            log.error("TTS synthesize failed: %s", e)
 
     # --- pipeline worker -------------------------------------------------------
     def _handle(self, kind, data):
@@ -147,6 +150,7 @@ class AIService:
             result,
             on_cmd=self._on_cmd,
             on_audio=self._on_audio,
+            on_tts_text=self._on_tts_text,
             on_ai_reply=self._on_ai_reply,
         )
 
@@ -222,6 +226,22 @@ def mock_run(args):
         if action and "payload" not in action:
             ok = False
             print("    !! action missing payload")
+        # Smoke-test execute() wiring with spy callbacks (no broker / models).
+        calls = {"cmd": 0, "audio": 0, "tts": 0, "reply": 0}
+        service.pipeline.execute(
+            result,
+            on_cmd=lambda p: calls.__setitem__("cmd", calls["cmd"] + 1),
+            on_audio=lambda p: calls.__setitem__("audio", calls["audio"] + 1),
+            on_tts_text=lambda r: calls.__setitem__("tts", calls["tts"] + 1),
+            on_ai_reply=lambda r: calls.__setitem__("reply", calls["reply"] + 1),
+        )
+        expect_action_calls = 1 if action else 0
+        if calls["cmd"] + calls["audio"] != expect_action_calls:
+            ok = False
+            print("    !! execute action wiring failed %s" % calls)
+        if result.reply and (calls["tts"] != 1 or calls["reply"] != 1):
+            ok = False
+            print("    !! execute reply wiring failed %s" % calls)
     return 0 if ok else 2
 
 

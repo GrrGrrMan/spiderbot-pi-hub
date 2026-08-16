@@ -30,7 +30,7 @@ class LLMClient:
         self.key_file = key_file
         self._client = None
         self._lock = threading.Lock()
-        self.status = "offline"      # offline|online (flips after a successful call)
+        self.status = "unknown"      # unknown|online|offline — flips online after a successful call
         self.last_error = None
 
     def is_available(self):
