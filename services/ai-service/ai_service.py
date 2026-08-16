@@ -67,6 +67,7 @@ class AIService:
         self._work = queue.Queue(maxsize=16)
         self._busy = False
         self._running = True
+        self._sender = f"ai-service-{self.device_id}"
 
     # --- MQTT ------------------------------------------------------------------
     def _on_connect(self, client, userdata, flags, reason_code, properties=None):
@@ -81,6 +82,11 @@ class AIService:
             log.warning("Bad payload on %s: %s", msg.topic, e)
             return
         if msg.topic == self.topic_ai:
+            # Self-talk guard: this service publishes its own assistant replies to
+            # topic_ai (and subscribes to it). Without this, those replies come back,
+            # re-match motion keywords, and loop forever (observed as a cmd/ai storm).
+            if data.get("role") in ("assistant", "system") or data.get("sender") == self._sender:
+                return
             self._enqueue(data.get("type", "text"), data)
 
     def _enqueue(self, kind, data):
@@ -110,7 +116,7 @@ class AIService:
     def _on_ai_reply(self, reply):
         if not reply:
             return
-        self._publish(self.topic_ai, {"type": "text", "role": "assistant", "content": reply})
+        self._publish(self.topic_ai, {"type": "text", "role": "assistant", "sender": "ai-service", "content": reply})
 
     def _on_tts_text(self, reply):
         if not reply or not self.tts or not self.tts.available():

@@ -57,10 +57,14 @@ class TTSClient:
             raise RuntimeError("TTS voice unavailable: %s" % self._error)
         buf = io.BytesIO()
         with wave.open(buf, "wb") as wf:
-            wf.setnchannels(1)   # piper synthesizes mono
-            # piper1 sets the WAV header itself on the file-like object; keep
-            # setnchannels minimal and let synthesize() stamp the real params.
-            voice.synthesize(text, wf)
+            # Sanity defaults so an empty/edge result still yields a valid WAV.
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(22050)
+            # piper1-gpl is streaming/event-based: synthesize_wav sets the real
+            # format (sample_rate/sample_width/channels) on the first chunk and
+            # writes int16 frames. (synthesize() alone only yields chunks.)
+            voice.synthesize_wav(text, wf)
         return buf.getvalue()
 
     def frames(self, wav_bytes, flow_id=None):
