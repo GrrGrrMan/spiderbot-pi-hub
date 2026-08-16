@@ -1,0 +1,18 @@
+[Unit]
+Description=V2 Hexapod P5 AI Voice Service (local STT/TTS + remote Groq LLM)
+After=network-online.target mosquitto.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=spider
+WorkingDirectory=/opt/hexapod-ai
+Environment=LLM_ENABLED=1
+Environment=AI_MODEL_DIR=/opt/hexapod-ai/models
+EnvironmentFile=/etc/hexapod-ai/ai.env
+ExecStart=/opt/hexapod-ai/venv/bin/python /opt/hexapod-ai/ai_service.py --broker localhost --port 1883
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

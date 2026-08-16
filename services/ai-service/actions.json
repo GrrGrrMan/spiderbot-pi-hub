@@ -1,0 +1,127 @@
+{
+  "version": 1,
+  "updated": "2026-08-16",
+  "notes": "Canonical AI voice action table (P5). Single source of truth for (a) web-ui AI action cards, (b) the RPi ai-service deterministic stage-1 parser, and (c) the LLM function-calling schema. Mirrors: web-ui/src/constants/aiActions.json, pi-hub/services/ai-service/actions.json. Payloads match the S3 motion/audio contract verbatim (PLAN.md §3).",
+  "actions": [
+    {
+      "id": "walk_forward",
+      "name": "Walk Forward",
+      "keywords": ["go forward", "walk forward", "walk", "move forward", "advance", "come here", "come closer"],
+      "payload": { "type": "motion", "gait": "tripod", "vx": 40, "vy": 0, "omega": 0, "step_height": 40, "cycle_time": 1.0, "leg_stance": 0, "hip_stance": 20, "pos_x": 0, "pos_y": 0, "pos_z": 0, "roll": 0, "pitch": 0, "yaw": 0 },
+      "topic": "cmd",
+      "duration_ms": 3000,
+      "reply": "On it — moving forward.",
+      "safety": { "motion": true, "voice": true }
+    },
+    {
+      "id": "walk_backward",
+      "name": "Walk Backward",
+      "keywords": ["go back", "walk back", "back up", "move backward", "backward", "retreat"],
+      "payload": { "type": "motion", "gait": "tripod", "vx": -40, "vy": 0, "omega": 0, "step_height": 40, "cycle_time": 1.0, "leg_stance": 0, "hip_stance": 20, "pos_x": 0, "pos_y": 0, "pos_z": 0, "roll": 0, "pitch": 0, "yaw": 0 },
+      "topic": "cmd",
+      "duration_ms": 3000,
+      "reply": "Backing up.",
+      "safety": { "motion": true, "voice": true }
+    },
+    {
+      "id": "turn_left",
+      "name": "Turn Left",
+      "keywords": ["turn left", "spin left", "rotate left", "go left"],
+      "payload": { "type": "motion", "gait": "tripod", "vx": 0, "vy": 0, "omega": -25, "step_height": 40, "cycle_time": 1.0, "leg_stance": 0, "hip_stance": 20, "pos_x": 0, "pos_y": 0, "pos_z": 0, "roll": 0, "pitch": 0, "yaw": 0 },
+      "topic": "cmd",
+      "duration_ms": 1500,
+      "reply": "Turning left.",
+      "safety": { "motion": true, "voice": true }
+    },
+    {
+      "id": "turn_right",
+      "name": "Turn Right",
+      "keywords": ["turn right", "spin right", "rotate right", "go right"],
+      "payload": { "type": "motion", "gait": "tripod", "vx": 0, "vy": 0, "omega": 25, "step_height": 40, "cycle_time": 1.0, "leg_stance": 0, "hip_stance": 20, "pos_x": 0, "pos_y": 0, "pos_z": 0, "roll": 0, "pitch": 0, "yaw": 0 },
+      "topic": "cmd",
+      "duration_ms": 1500,
+      "reply": "Turning right.",
+      "safety": { "motion": true, "voice": true }
+    },
+    {
+      "id": "spin",
+      "name": "Spin Around",
+      "keywords": ["spin", "spin around", "do a spin", "360", "rotate", "turn around", "dance around"],
+      "payload": { "type": "motion", "gait": "tripod", "vx": 0, "vy": 0, "omega": 50, "step_height": 40, "cycle_time": 1.0, "leg_stance": 0, "hip_stance": 20, "pos_x": 0, "pos_y": 0, "pos_z": 0, "roll": 0, "pitch": 0, "yaw": 0 },
+      "topic": "cmd",
+      "duration_ms": 2500,
+      "reply": "Wheee — spinning!",
+      "safety": { "motion": true, "voice": true }
+    },
+    {
+      "id": "stop",
+      "name": "Stop",
+      "keywords": ["stop", "halt", "freeze", "stand still", "hold", "stay"],
+      "payload": { "type": "motion", "gait": "tripod", "vx": 0, "vy": 0, "omega": 0, "step_height": 40, "cycle_time": 1.0, "leg_stance": 0, "hip_stance": 20, "pos_x": 0, "pos_y": 0, "pos_z": 0, "roll": 0, "pitch": 0, "yaw": 0 },
+      "topic": "cmd",
+      "duration_ms": 0,
+      "reply": "Stopping.",
+      "safety": { "motion": true, "voice": true }
+    },
+    {
+      "id": "freeze",
+      "name": "Power Off (Freeze)",
+      "keywords": ["power off", "sleep", "shut down", "go limp", "power down", "freeze up"],
+      "payload": { "type": "system", "power": false },
+      "topic": "cmd",
+      "duration_ms": 0,
+      "reply": "Going limp. Goodnight!",
+      "safety": { "motion": true, "voice": true }
+    },
+    {
+      "id": "wake",
+      "name": "Wake Up",
+      "keywords": ["wake up", "power on", "turn on", "awaken", "come back", "hello robot"],
+      "payload": { "type": "system", "power": true },
+      "topic": "cmd",
+      "duration_ms": 0,
+      "reply": "Hello! I'm awake.",
+      "safety": { "motion": true, "voice": true }
+    },
+    {
+      "id": "beep",
+      "name": "Beep",
+      "keywords": ["beep", "make a sound", "beep once"],
+      "payload": { "action": "beep" },
+      "topic": "audio",
+      "duration_ms": 0,
+      "reply": "Beep!",
+      "safety": { "motion": false, "voice": true }
+    },
+    {
+      "id": "alarm_curious",
+      "name": "Curious Tone",
+      "keywords": ["curious", "curious sound", "happy tone", "play curious"],
+      "payload": { "action": "alarm", "payload": "curious" },
+      "topic": "audio",
+      "duration_ms": 0,
+      "reply": "That sounded curious.",
+      "safety": { "motion": false, "voice": true }
+    },
+    {
+      "id": "alarm_startle",
+      "name": "Startle Tone",
+      "keywords": ["startle", "surprise", "scary sound", "alarm"],
+      "payload": { "action": "alarm", "payload": "startle" },
+      "topic": "audio",
+      "duration_ms": 0,
+      "reply": "Whoa, that was surprising!",
+      "safety": { "motion": false, "voice": true }
+    },
+    {
+      "id": "alarm_idle",
+      "name": "Idle Tone",
+      "keywords": ["idle", "idle sound", "chill", "relax tone"],
+      "payload": { "action": "alarm", "payload": "idle" },
+      "topic": "audio",
+      "duration_ms": 0,
+      "reply": "Nice and calm.",
+      "safety": { "motion": false, "voice": true }
+    }
+  ]
+}
