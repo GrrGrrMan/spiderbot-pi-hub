@@ -55,6 +55,33 @@ mosquitto_pub -t hexapod/hexapod-s3-01/ai -m '{"type":"text","role":"user","cont
 mosquitto_sub -t 'hexapod/hexapod-s3-01/#' -v   # watch: cmd motion, ai reply, tts frames, ai/status
 ```
 
+## Full conversation memory (2026-08-17)
+
+The web-ui sends its visible chat log as a `history` array on every `hexapod/{id}/ai`
+text/audio message, giving the LLM **full conversation memory** (not just the last
+turn):
+
+```json
+{
+  "type": "text",
+  "role": "user",
+  "content": "and what did you say before?",
+  "history": [
+    { "role": "user",      "content": "hello robot" },
+    { "role": "assistant", "content": "Hi! I'm Hexa, your six-legged companion." }
+  ]
+}
+```
+
+- `history` is optional (back-compat with older web-ui builds). If absent → `[]`.
+- It is **prior** turns only — the caller must NOT include the current `content` in
+  `history` (the service appends it as the final user message itself).
+- Roles are sanitized to `user|assistant|system`; anything else becomes `user`.
+- `providers/llm.py` sends the **last `MAX_LLM_HISTORY` (50)** messages inside the
+  request; the web-ui also caps at 50 and persists up to `MAX_PERSISTED_MESSAGES`
+  (200) in `sessionStorage`. This fits llama-3.3-70b's 128 k token context.
+- Non-list / malformed `history` is ignored with a warning (defensive).
+
 ## Env knobs (systemd `EnvironmentFile=/etc/hexapod-ai/ai.env`)
 
 `DEVICE_ID` (default `hexapod-s3-01`), `LLM_MODEL`, `LLM_BASE_URL`,

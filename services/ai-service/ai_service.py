@@ -151,7 +151,15 @@ class AIService:
         text = (text or "").strip()
         if not text:
             return
-        result = self.pipeline.decide(text)
+        # Full conversation memory (2026-08-17): the web-ui ships the prior
+        # chat turns as a `history` array on every ai-text payload. Trimming
+        # happens inside LLMClient.chat() (MAX_LLM_HISTORY). Defaults to []
+        # for clients that don't send it (back-compat with older web-ui builds).
+        history = payload.get("history") or []
+        if not isinstance(history, list):
+            log.warning("ignoring non-list history field (%s)", type(history).__name__)
+            history = []
+        result = self.pipeline.decide(text, history=history)
         self.pipeline.execute(
             result,
             on_cmd=self._on_cmd,

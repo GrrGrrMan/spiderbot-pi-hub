@@ -11,6 +11,11 @@ log = logging.getLogger("ai.llm")
 DEFAULT_BASE_URL = "https://api.groq.com/openai/v1"
 DEFAULT_MODEL = "llama-3.3-70b-versatile"
 DEFAULT_KEY_FILE = "/etc/hexapod-ai/groq.key"
+# Hard cap on how many prior messages get sent to the LLM per call.
+# The web-ui caps persisted history at MAX_PERSISTED_MESSAGES=200 (sessionStorage);
+# 50 short chat turns fit comfortably within llama-3.3-70b's 128k context
+# while preventing a malicious or pathological payload from exhausting it.
+MAX_LLM_HISTORY = 50
 
 
 def read_key(key_file=DEFAULT_KEY_FILE):
@@ -61,8 +66,16 @@ class LLMClient:
         """
         client = self._ensure()
         messages = [{"role": "system", "content": system or "You are a helpful robot assistant."}]
-        for h in (history or [])[-6:]:
-            messages.append({"role": h.get("role", "user"), "content": h.get("content", "")})
+        # Full conversation memory (2026-08-17): include every prior message
+        # the caller passes. The web-ui caps persisted history at
+        # MAX_PERSISTED_MESSAGES=200, and we trim here to MAX_LLM_HISTORY
+        # so a malicious/large payload can't blow Groq's request token limit
+        # (llama-3.3-70b context is 128k tokens; 50 short chat turns easily fits).
+        for h in (history or [])[-MAX_LLM_HISTORY:]:
+            role = h.get("role", "user")
+            if role not in ("user", "assistant", "system"):
+                role = "user"
+            messages.append({"role": role, "content": h.get("content", "")})
         messages.append({"role": "user", "content": text})
 
         from action_parser import llm_tool_schema
