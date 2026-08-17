@@ -38,6 +38,8 @@ MOCK_CORPUS = [
     "wake up",
     "make a beep",
     "play the curious sound",
+    "give me a wave",
+    "do a stretch",
     "tell me a fun fact",
     "",
 ]
@@ -113,10 +115,15 @@ class AIService:
     def _on_audio(self, payload):
         self._publish(self.topic_audio, payload, qos=0)
 
-    def _on_ai_reply(self, reply):
+    def _on_ai_reply(self, reply, action_id=None):
         if not reply:
             return
-        self._publish(self.topic_ai, {"type": "text", "role": "assistant", "sender": "ai-service", "content": reply})
+        msg = {"type": "text", "role": "assistant", "sender": "ai-service", "content": reply}
+        if action_id:
+            # Chunk 2 — preset directive: web-ui runs the local interpolator
+            # (the firmware has no preset handler on the cmd topic).
+            msg["action_id"] = action_id
+        self._publish(self.topic_ai, msg)
 
     def _on_tts_text(self, reply):
         if not reply or not self.tts or not self.tts.available():
@@ -249,15 +256,30 @@ def mock_run(args):
             print("    !! action missing payload")
         # Smoke-test execute() wiring with spy callbacks (no broker / models).
         calls = {"cmd": 0, "audio": 0, "tts": 0, "reply": 0}
+        directive_ids = []
+
+        def on_ai_reply_spy(r, action_id=None):
+            calls["reply"] += 1
+            if action_id:
+                directive_ids.append(action_id)
+
         service.pipeline.execute(
             result,
             on_cmd=lambda p: calls.__setitem__("cmd", calls["cmd"] + 1),
             on_audio=lambda p: calls.__setitem__("audio", calls["audio"] + 1),
             on_tts_text=lambda r: calls.__setitem__("tts", calls["tts"] + 1),
-            on_ai_reply=lambda r: calls.__setitem__("reply", calls["reply"] + 1),
+            on_ai_reply=on_ai_reply_spy,
         )
-        expect_action_calls = 1 if action else 0
-        if calls["cmd"] + calls["audio"] != expect_action_calls:
+        if action and action["payload"].get("type") == "preset":
+            # Chunk 2 — presets never hit the firmware cmd topic; the action_id
+            # rides the assistant reply for web-ui to execute locally.
+            if calls["cmd"] + calls["audio"] != 0:
+                ok = False
+                print("    !! preset must not publish cmd/audio %s" % calls)
+            if directive_ids != [action["id"]]:
+                ok = False
+                print("    !! preset directive missing %s" % directive_ids)
+        elif calls["cmd"] + calls["audio"] != (1 if action else 0):
             ok = False
             print("    !! execute action wiring failed %s" % calls)
         if result.reply and (calls["tts"] != 1 or calls["reply"] != 1):

@@ -33,16 +33,22 @@ def main():
         check("keywords" in a and a["keywords"], "action %s keywords" % a["id"])
         if a["topic"] == "cmd":
             p = a["payload"]
-            check(p.get("type") in ("motion", "system"), "action %s cmd type" % a["id"])
+            check(p.get("type") in ("motion", "system", "preset"), "action %s cmd type" % a["id"])
             if p.get("type") == "motion":
                 check("vx" in p and "vy" in p and "omega" in p and "gait" in p,
                       "action %s motion fields" % a["id"])
+            elif p.get("type") == "preset":
+                # Chunk 2 — presets are web-ui-executed (local interpolator);
+                # the payload names the gesture and never hits the firmware cmd.
+                check("preset" in p and p["preset"], "action %s preset name" % a["id"])
 
     check(len(ids) == len(actions), "action ids unique")
 
     # Deterministic matching sanity
     check(match_action("please walk forward", actions) is not None, "match 'walk forward'")
     check(match_action("do a spin", actions) is not None, "match 'spin'")
+    check(match_action("give me a wave", actions) is not None, "match 'wave'")
+    check(match_action("do a stretch", actions) is not None, "match 'stretch'")
     check(match_action("tell me a fun fact", actions) is None, "no match on chat-only")
 
     # LLM tool schema derived from the table

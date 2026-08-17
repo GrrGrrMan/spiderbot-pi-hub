@@ -65,16 +65,24 @@ class Pipeline:
     def execute(self, result, on_cmd, on_audio, on_tts_text, on_ai_reply):
         """Publish the decided action + speak the reply.
 
-        on_cmd(payload)       -> publish hexapod/{id}/cmd
-        on_audio(payload)     -> publish hexapod/{id}/audio (alarm/beep)
-        on_tts_text(reply)    -> synth + publish chunked TTS frames
-        on_ai_reply(text)     -> publish assistant chat message
+        on_cmd(payload)                -> publish hexapod/{id}/cmd
+        on_audio(payload)              -> publish hexapod/{id}/audio (alarm/beep)
+        on_tts_text(reply)             -> synth + publish chunked TTS frames
+        on_ai_reply(text, action_id=None) -> publish assistant chat message;
+                                    action_id tells web-ui to run a preset locally
         """
         action = result.action
+        directive_action_id = None
         if action:
             payload = action["payload"]
             if action["topic"] == "audio":
                 on_audio(payload)
+            elif payload.get("type") == "preset":
+                # Chunk 2 — presets are web-ui-executed: the firmware has no
+                # preset handler, so never publish to the cmd topic. The reply
+                # carries the action_id; web-ui AIPanel runs the local
+                # interpolator (motionSynthesizer) when it sees it.
+                directive_action_id = action["id"]
             else:
                 on_cmd(payload)
                 duration_ms = action.get("duration_ms") or 0
@@ -85,7 +93,7 @@ class Pipeline:
                     self._schedule_stop(duration_ms, stop, on_cmd)
 
         if result.reply:
-            on_ai_reply(result.reply)
+            on_ai_reply(result.reply, action_id=directive_action_id)
             on_tts_text(result.reply)
 
     def _schedule_stop(self, delay_ms, stop_payload, on_cmd):

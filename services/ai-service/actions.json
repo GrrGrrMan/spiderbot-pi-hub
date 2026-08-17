@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated": "2026-08-16",
+  "updated": "2026-08-18",
   "notes": "Canonical AI voice action table (P5). Single source of truth for (a) web-ui AI action cards, (b) the RPi ai-service deterministic stage-1 parser, and (c) the LLM function-calling schema. Mirrors: web-ui/src/constants/aiActions.json, pi-hub/services/ai-service/actions.json. Payloads match the S3 motion/audio contract verbatim (PLAN.md §3).",
   "actions": [
     {
@@ -122,6 +122,46 @@
       "duration_ms": 0,
       "reply": "Nice and calm.",
       "safety": { "motion": false, "voice": true }
+    },
+    {
+      "id": "preset_wave",
+      "name": "Wave",
+      "keywords": ["wave", "wave hello", "say hi", "greet", "give me a wave"],
+      "payload": { "type": "preset", "preset": "wave" },
+      "topic": "cmd",
+      "duration_ms": 4000,
+      "reply": "Hello there — wave!",
+      "safety": { "motion": true, "voice": true }
+    },
+    {
+      "id": "preset_cheer",
+      "name": "Cheer",
+      "keywords": ["cheer", "celebrate", "double wave", "yay", "hooray", "do a cheer"],
+      "payload": { "type": "preset", "preset": "cheer" },
+      "topic": "cmd",
+      "duration_ms": 4000,
+      "reply": "Woo-hoo! Cheering!",
+      "safety": { "motion": true, "voice": true }
+    },
+    {
+      "id": "preset_look_around",
+      "name": "Look Around",
+      "keywords": ["look around", "look left", "look right", "turn head", "survey the room", "look about"],
+      "payload": { "type": "preset", "preset": "lookAround" },
+      "topic": "cmd",
+      "duration_ms": 5000,
+      "reply": "Looking around.",
+      "safety": { "motion": true, "voice": true }
+    },
+    {
+      "id": "preset_stretch",
+      "name": "Stretch",
+      "keywords": ["stretch", "do a stretch", "stretch out", "limber up", "do stretches"],
+      "payload": { "type": "preset", "preset": "stretch" },
+      "topic": "cmd",
+      "duration_ms": 5000,
+      "reply": "Ahh — nice stretch.",
+      "safety": { "motion": true, "voice": true }
     }
   ]
 }
