@@ -1,0 +1,47 @@
+{
+    # Bind Caddy's HTTP listener to port 8080 to avoid clashing with Nginx on port 80
+    http_port 8080
+}
+
+# --------------------------------------------------
+# 1. Hexapod App (Main HTTPS - Port 443)
+#    2026-08-17 patched: reverse_proxy now points at nginx on :80 (which serves
+#    the V2 web-ui static build under /home/spider/v2-web-ui/build), instead of
+#    the crashed spiderbot-node-bridge on :5000 that kept returning 502.
+#    Pinned to 127.0.0.1 (not `localhost`) so Caddy's Go runtime doesn't
+#    resolve to ::1 — the live nginx ACL in this install currently denies ::1,
+#    so an IPv6 loopback connection from Caddy would 403. Switch back to
+#    `localhost:80` once the IPv6 ACL lines are in place in
+#    /etc/nginx/sites-available/spiderbot.
+#    To revert end-to-end: change `reverse_proxy 127.0.0.1:80` back to
+#    `localhost:5000` once spiderbot-node-bridge.service is functional again.
+# --------------------------------------------------
+spider-w.tail87d377.ts.net {
+    tls /etc/caddy/spider-w.tail87d377.ts.net.crt /etc/caddy/spider-w.tail87d377.ts.net.key
+    reverse_proxy 127.0.0.1:80
+}
+
+# --------------------------------------------------
+# 2. ntfy Service (Secure Port 8443) - UNCHANGED
+# --------------------------------------------------
+spider-w.tail87d377.ts.net:8443 {
+    tls /etc/caddy/spider-w.tail87d377.ts.net.crt /etc/caddy/spider-w.tail87d377.ts.net.key
+    reverse_proxy localhost:8091
+}
+
+# --------------------------------------------------
+# 3. MQTT WebSocket (Secure Port 9443) - ADDED 2026-08-17
+#    Terminates TLS on the existing LE cert, then reverse-proxies plaintext
+#    to mosquitto's WS listener on :9001. Lets browsers served from HTTPS
+#    open wss:// connections without mixed-content errors. ESP32 firmware
+#    and python-core continue to use the plain-WS listener on :9001 directly
+#    (or :1883 for raw MQTT), unaffected.
+#
+#    Port 9443 (not 9001) because mosquitto already binds :9001 for plain
+#    WS; a second listener on the same port collides. The web-ui
+#    useMqtt.js picks 9443 when window.location.protocol === "https:".
+# --------------------------------------------------
+spider-w.tail87d377.ts.net:9443 {
+    tls /etc/caddy/spider-w.tail87d377.ts.net.crt /etc/caddy/spider-w.tail87d377.ts.net.key
+    reverse_proxy 127.0.0.1:9001
+}
