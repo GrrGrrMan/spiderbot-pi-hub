@@ -86,3 +86,18 @@ turn):
 
 `DEVICE_ID` (default `hexapod-s3-01`), `LLM_MODEL`, `LLM_BASE_URL`,
 `LLM_ENABLED` (`0` = deterministic only), `AI_MODEL_DIR`.
+
+## LLM response cache (2026-08-18)
+
+`providers/llm.py` keeps a small in-process TTL+LRU cache of
+`(action_id, reply)` pairs keyed on `sha256(text + last-2-history + system)`.
+Stage-1 keyword matching already short-circuits ~80% of phrases for free;
+this catches the "user repeated themselves" / "same turn after page reload"
+cases for the LLM-bound ~20%, saving a Groq round-trip.
+
+Knobs (env, optional): `AI_LLM_CACHE_TTL` (default 60s),
+`AI_LLM_CACHE_MAXSIZE` (default 256). Set `AI_LLM_CACHE_TTL=0` to disable.
+
+Live stats (`hits`, `misses`, `evictions`, `size`) ride along on the
+`hexapod/{id}/ai/status` heartbeat as `llm.cache` so the web-ui can show the
+hit rate without an extra MQTT round-trip.

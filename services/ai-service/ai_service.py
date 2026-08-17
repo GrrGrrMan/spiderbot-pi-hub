@@ -200,6 +200,12 @@ class AIService:
                 "tts": bool(self.tts),
                 "ts": int(time.time() * 1000),
             }
+            # LLM response cache stats (2026-08-18): hit rate is the metric that
+            # tells you whether the cache is actually saving Groq round-trips.
+            # Surfaced in the heartbeat so the web-ui status bar can show it
+            # without an extra MQTT round-trip.
+            if self.llm and self.llm.cache is not None:
+                payload["llm"]["cache"] = self.llm.cache_stats()
             self._publish(self.topic_ai_status, payload, qos=0)
             time.sleep(5)
 
