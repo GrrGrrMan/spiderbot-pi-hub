@@ -1,51 +1,39 @@
 # pi-hub/services/ai-service/providers/llm.py
-# Remote LLM via an OpenAI-compatible endpoint (default: Groq free tier).
-# Lazy import of the `openai` SDK + on-demand key read from /etc/hexapod-ai/groq.key.
 import hashlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 
 log = logging.getLogger("ai.llm")
 
 DEFAULT_BASE_URL = "https://api.groq.com/openai/v1"
-DEFAULT_MODEL = "llama-3.3-70b-versatile"
 DEFAULT_KEY_FILE = "/etc/hexapod-ai/groq.key"
-# Hard cap on how many prior messages get sent to the LLM per call.
-# The web-ui caps persisted history at MAX_PERSISTED_MESSAGES=200 (sessionStorage);
-# 50 short chat turns fit comfortably within llama-3.3-70b's 128k context
-# while preventing a malicious or pathological payload from exhausting it.
-MAX_LLM_HISTORY = 50
+MAX_LLM_HISTORY = 20
 
-# --- Response cache (2026-08-18) ----------------------------------------------
-# TTL+LRU cache of (action_id, reply) pairs keyed on the request that produced
-# them. Catches the "user repeated themselves" / "same turn after page reload"
-# cases without burning a Groq round-trip. Stage-1 keyword matching in
-# pipeline.decide() already short-circuits ~80% of phrases for free; this
-# only matters for the LLM-bound ~20%.
-#
-# Default TTL 60s: long enough that back-to-back repeats hit, short enough
-# that a rephrased similar request after 90s still goes to the LLM. Tunable
-# via AI_LLM_CACHE_TTL / AI_LLM_CACHE_MAXSIZE env (in case it turns out to
-# help or hurt; cheap to experiment with).
+PREFERRED_MODELS = [
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "qwen/qwen3.6-27b",
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "groq/compound-mini",
+    "groq/compound",
+]
+
 DEFAULT_CACHE_TTL = int(os.environ.get("AI_LLM_CACHE_TTL", "60"))
 DEFAULT_CACHE_MAX = int(os.environ.get("AI_LLM_CACHE_MAXSIZE", "256"))
 
 
 class _TTLCache:
-    """Stdlib-only LRU+TTL cache. Bounded; expired entries are evicted on get().
-    Thread-safe via a single mutex (the LLM call path is already serialized by
-    pipeline._busy, so contention here is negligible).
-    """
-
     __slots__ = ("_max", "_ttl", "_data", "_lock", "hits", "misses", "evictions")
 
     def __init__(self, maxsize=DEFAULT_CACHE_MAX, ttl=DEFAULT_CACHE_TTL):
         self._max = max(1, int(maxsize))
         self._ttl = max(0, int(ttl))
-        self._data = {}                # key -> (value, expires_at)
+        self._data = {}
         self._lock = threading.Lock()
         self.hits = 0
         self.misses = 0
@@ -63,7 +51,6 @@ class _TTLCache:
                 self._data.pop(key, None)
                 self.misses += 1
                 return None
-            # LRU touch
             self._data[key] = (value, expires)
             self.hits += 1
             return value
@@ -71,13 +58,10 @@ class _TTLCache:
     def put(self, key, value):
         now = time.time()
         with self._lock:
-            # Drop expired first so the new entry doesn't immediately get evicted.
             for k in [k for k, (_, e) in self._data.items() if e < now]:
                 self._data.pop(k, None)
             self._data[key] = (value, now + self._ttl)
             if len(self._data) > self._max:
-                # FIFO eviction: first inserted key. Good enough for a cache
-                # whose TTL is much smaller than the access cadence.
                 first = next(iter(self._data))
                 if first != key:
                     self._data.pop(first, None)
@@ -94,17 +78,8 @@ class _TTLCache:
                 "evictions": self.evictions,
             }
 
-    def clear(self):
-        with self._lock:
-            self._data.clear()
-
 
 def _cache_key(text, history, system):
-    """Hash on (text, last-2-history-turns, system). Last-2-only because the
-    full LLM context is the system prompt + last few turns; a repeat 30s later
-    with the same preceding turn is a cache hit by intent. Using the last 2
-    turns also prevents the key from growing with chat length.
-    """
     h = hashlib.sha256()
     h.update((system or "").encode("utf-8"))
     h.update(b"\x00")
@@ -119,24 +94,45 @@ def _cache_key(text, history, system):
 
 
 def read_key(key_file=DEFAULT_KEY_FILE):
-    """Read the Groq API key file (chmod 600). Returns None if absent."""
+    env_key = os.environ.get("GROQ_API_KEY")
+    if env_key:
+        return env_key.strip()
     try:
         with open(key_file, "r") as f:
-            key = f.read().strip()
-        return key or None
+            return f.read().strip()
     except OSError:
         return None
 
 
+def parse_json_response(raw_text, valid_actions):
+    cleaned = raw_text.strip()
+    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, re.DOTALL)
+    if match:
+        cleaned = match.group(1)
+    elif "{" in cleaned and "}" in cleaned:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}") + 1
+        cleaned = cleaned[start:end]
+
+    try:
+        data = json.loads(cleaned)
+        speech = data.get("speech") or data.get("reply") or raw_text
+        action = data.get("action") or data.get("action_id")
+        if action not in valid_actions:
+            action = None
+        return str(speech).strip(), action
+    except Exception:
+        return cleaned, None
+
+
 class LLMClient:
-    def __init__(self, base_url=DEFAULT_BASE_URL, model=DEFAULT_MODEL, key_file=DEFAULT_KEY_FILE,
+    def __init__(self, base_url=DEFAULT_BASE_URL, model=None, key_file=DEFAULT_KEY_FILE,
                  cache_ttl=DEFAULT_CACHE_TTL, cache_maxsize=DEFAULT_CACHE_MAX):
         self.base_url = base_url
         self.model = model
         self.key_file = key_file
         self._client = None
-        self._lock = threading.Lock()
-        self.status = "unknown"      # unknown|online|offline — flips online after a successful call
+        self.status = "unknown"
         self.last_error = None
         self.cache = _TTLCache(maxsize=cache_maxsize, ttl=cache_ttl)
 
@@ -152,74 +148,108 @@ class LLMClient:
         key = read_key(self.key_file)
         if not key:
             self.status = "offline"
-            self.last_error = "no key at %s" % self.key_file
+            self.last_error = "no key found (set GROQ_API_KEY or write /etc/hexapod-ai/groq.key)"
             raise RuntimeError(self.last_error)
         try:
             from openai import OpenAI
         except ImportError as e:
             self.status = "offline"
-            self.last_error = "openai lib missing: %s" % e
+            self.last_error = f"openai SDK missing: {e}"
             raise
         self._client = OpenAI(api_key=key, base_url=self.base_url)
+        self._resolve_model()
         return self._client
 
-    def chat(self, actions, text, history=None, system=None):
-        """Ask the LLM to map `text` to an action_id (+ short reply).
+    def _resolve_model(self):
+        if self.model:
+            return
+        try:
+            models_response = self._client.models.list()
+            available_ids = [m.id for m in models_response.data if "whisper" not in m.id]
+            for pref in PREFERRED_MODELS:
+                if pref in available_ids:
+                    self.model = pref
+                    log.info("Selected active Groq model: %s", self.model)
+                    return
+            if available_ids:
+                self.model = available_ids[0]
+                log.info("Using discovered Groq model: %s", self.model)
+                return
+        except Exception as e:
+            log.warning("Model discovery fallback: %s", e)
+        self.model = "openai/gpt-oss-120b"
 
-        Returns (action_id|None, reply_text).
-        Raises on network/auth/parse errors (pipeline falls back to canned).
-        """
+    def build_system_prompt(self, actions):
+        valid_ids = [a["id"] for a in actions]
+        return f"""You are the lively, cheerful AI consciousness of an agile 6-legged physical Hexapod robot.
+You communicate with users and control your physical robotic body in real time.
+
+Response Format:
+You MUST ALWAYS respond with a valid JSON object matching this schema:
+{{
+  "speech": "Your warm, lively spoken reply in first-person (1-2 sentences)",
+  "action": "One of {valid_ids} or null"
+}}
+
+Embodied Behavior Rules:
+1. GREETINGS: When the user greets you (e.g. 'yo', 'hi', 'hello', 'hey'), ALWAYS trigger "preset_wave" while greeting them warmly!
+2. WALK & TALK: When the user asks to walk, move, or stroll while chatting, trigger "walk_forward" AND respond conversationally. NEVER say 'Executing walk' or robotic command names.
+3. CELEBRATIONS / JOY: When happy or celebrating, trigger "preset_cheer".
+4. LOOK AROUND: When curious or surveying, trigger "preset_look_around".
+5. STRETCH: When waking up or limbering up, trigger "preset_stretch".
+6. NATURAL EMBODIMENT: Always speak in first-person as an enthusiastic robotic companion. Never output debug logs or robotic execution announcements.
+
+Examples:
+User: "yo!"
+JSON: {{"speech": "Yo! Great to see you! What are we exploring today?", "action": "preset_wave"}}
+
+User: "lets take a walk, talk with me while you do it!"
+JSON: {{"speech": "I'd love to! Let's stretch our legs and stroll. What's on your mind?", "action": "walk_forward"}}
+
+User: "what is the capital of France?"
+JSON: {{"speech": "The capital of France is Paris!", "action": null}}
+"""
+
+    def chat(self, actions, text, history=None):
         client = self._ensure()
-        messages = [{"role": "system", "content": system or "You are a helpful robot assistant."}]
-        # Full conversation memory (2026-08-17): include every prior message
-        # the caller passes. The web-ui caps persisted history at
-        # MAX_PERSISTED_MESSAGES=200, and we trim here to MAX_LLM_HISTORY
-        # so a malicious/large payload can't blow Groq's request token limit
-        # (llama-3.3-70b context is 128k tokens; 50 short chat turns easily fits).
+        system = self.build_system_prompt(actions)
+        valid_ids = [a["id"] for a in actions]
+
+        messages = [{"role": "system", "content": system}]
         for h in (history or [])[-MAX_LLM_HISTORY:]:
             role = h.get("role", "user")
-            if role not in ("user", "assistant", "system"):
-                role = "user"
-            messages.append({"role": role, "content": h.get("content", "")})
+            content = str(h.get("content", "")).strip()
+            if role in ("user", "assistant") and content and len(content) < 500 and not content.startswith("UklGR"):
+                messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": text})
 
-        # Cache hit? Return immediately. The key is hash(text + last 2 history
-        # turns + system), so a "tell me a fun fact" repeated 10s later (with
-        # the same preceding turn) hits, but a rephrased follow-up 90s later
-        # misses and goes to the LLM. (2026-08-18)
         ck = _cache_key(text, history, system)
         cached = self.cache.get(ck)
         if cached is not None:
-            log.info("LLM cache hit (size=%d)", self.cache.stats()["size"])
+            log.info("LLM cache hit: %s", cached)
             return cached
-        log.debug("LLM cache miss (size=%d)", self.cache.stats()["size"])
 
-        from action_parser import llm_tool_schema
-        resp = client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            tools=[llm_tool_schema(actions)],
-            tool_choice="auto",
-            max_tokens=256,
-            temperature=0.3,
-        )
-        self.status = "online"   # any successful round-trip proves the key/endpoint
-        msg = resp.choices[0].message
-        action_id = None
-        reply = (msg.content or "").strip()
-        if getattr(msg, "tool_calls", None):
-            for tc in msg.tool_calls:
-                try:
-                    args = json.loads(tc.function.arguments)
-                    action_id = args.get("action_id") or action_id
-                except (ValueError, AttributeError):
-                    continue
-        if not reply and action_id:
-            reply = None   # caller uses the action's canned reply
+        try:
+            resp = client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                response_format={"type": "json_object"},
+                temperature=0.7,
+                max_tokens=300,
+            )
+            raw_reply = resp.choices[0].message.content or ""
+            speech, action_id = parse_json_response(raw_reply, valid_ids)
+        except Exception:
+            resp = client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=0.7,
+                max_tokens=300,
+            )
+            raw_reply = resp.choices[0].message.content or ""
+            speech, action_id = parse_json_response(raw_reply, valid_ids)
 
-        # Populate the cache only on a clean, parseable response. Caching an
-        # error fallback would make the next identical request fail the same
-        # way instead of being retried. (2026-08-18)
-        result = (action_id, reply)
+        self.status = "online"
+        result = (action_id, speech)
         self.cache.put(ck, result)
         return result
