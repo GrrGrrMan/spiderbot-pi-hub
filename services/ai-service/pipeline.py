@@ -46,27 +46,35 @@ class Pipeline:
         return PipelineResult(reply=CANNED_UNKNOWN)
 
     def execute(self, result, on_cmd, on_audio, on_tts_text, on_ai_reply):
-        action = result.action
-        directive_action_id = None
+            action = result.action
+            directive_action_id = None
 
-        if action:
-            payload = action["payload"]
-            if action["topic"] == "audio":
-                on_audio(payload)
-            elif payload.get("type") == "preset":
-                directive_action_id = action["id"]
-            else:
-                on_cmd(payload)
-                duration_ms = action.get("duration_ms") or 0
-                if duration_ms > 0:
-                    stop = dict(payload)
-                    for k in ("vx", "vy", "omega"):
-                        stop[k] = 0
-                    self._schedule_stop(duration_ms, stop, on_cmd)
+            if action:
+                payload = action["payload"]
+                if action["topic"] == "audio":
+                    on_audio(payload)
+                elif payload.get("type") == "preset":
+                    directive_action_id = action["id"]
+                else:
+                    on_cmd(payload)
+                    
+                    # Calculate required duration: action duration or speech duration + buffer
+                    base_duration = action.get("duration_ms") or 0
+                    speech_len = len(result.reply) if result.reply else 0
+                    # ~15 characters per second + 1.5s TTS transfer buffer
+                    tts_duration_ms = int((speech_len / 15.0) * 1000) + 1500 if speech_len > 0 else 0
+                    
+                    effective_duration_ms = max(base_duration, tts_duration_ms)
+                    
+                    if effective_duration_ms > 0:
+                        stop = dict(payload)
+                        for k in ("vx", "vy", "omega"):
+                            stop[k] = 0
+                        self._schedule_stop(effective_duration_ms, stop, on_cmd)
 
-        if result.reply:
-            on_ai_reply(result.reply, action_id=directive_action_id)
-            on_tts_text(result.reply)
+            if result.reply:
+                on_ai_reply(result.reply, action_id=directive_action_id)
+                on_tts_text(result.reply)
 
     def _schedule_stop(self, delay_ms, stop_payload, on_cmd):
         def stop():
