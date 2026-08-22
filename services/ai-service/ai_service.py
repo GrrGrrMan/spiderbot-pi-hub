@@ -35,6 +35,7 @@ class AIService:
         self.topic_ai = f"hexapod/{self.device_id}/ai"
         self.topic_ai_status = f"hexapod/{self.device_id}/ai/status"
         self.topic_audio = f"hexapod/{self.device_id}/audio"
+        self.topic_audio_status = f"hexapod/{self.device_id}/audio/status"
 
         self.actions = load_actions(args.actions)
         self.llm = LLMClient(model=args.llm_model, base_url=args.llm_base_url) if args.llm else None
@@ -47,11 +48,13 @@ class AIService:
         self._busy = False
         self._running = True
         self._sender = f"ai-service-{self.device_id}"
+        self._audio_done_event = threading.Event()
 
     def _on_connect(self, client, userdata, flags, reason_code, properties=None):
         log.info("Connected to MQTT broker at %s:%s", self.broker_host, self.broker_port)
         client.subscribe(self.topic_ai)
-        log.info("Listening on AI channel: %s", self.topic_ai)
+        client.subscribe(self.topic_audio_status)
+        log.info("Listening on AI: %s and AudioStatus: %s", self.topic_ai, self.topic_audio_status)
 
     def _on_message(self, client, userdata, msg):
         try:
@@ -60,8 +63,16 @@ class AIService:
             log.warning("Invalid JSON payload on %s: %s", msg.topic, e)
             return
 
+        # Listen to S3 hardware playback status
+        if msg.topic == self.topic_audio_status:
+            if data.get("state") == "idle":
+                self._audio_done_event.set()
+            elif data.get("state") == "playing":
+                self._audio_done_event.clear()
+            return
+
         if msg.topic == self.topic_ai:
-            if data.get("role") in ("assistant", "system") or data.get("type") == "transcription" or data.get("sender") == self._sender:
+            if data.get("role") in ("assistant", "system") or data.get("type") in ("transcription", "directive") or data.get("sender") == self._sender:
                 return
             self._enqueue(data.get("type", "text"), data)
 
@@ -83,7 +94,7 @@ class AIService:
     def _on_audio(self, payload):
         self._publish(self.topic_audio, payload)
 
-    def _on_ai_reply(self, reply, action_id=None):
+    def _on_ai_reply(self, reply):
         if not reply:
             return
         msg = {
@@ -93,19 +104,41 @@ class AIService:
             "content": reply,
             "timestamp": int(time.time() * 1000),
         }
-        if action_id:
-            msg["action_id"] = action_id
+        self._publish(self.topic_ai, msg)
+
+    def _on_action_directive(self, action_id):
+        if not action_id:
+            return
+        msg = {
+            "type": "directive",
+            "role": "assistant",
+            "sender": self._sender,
+            "action_id": action_id,
+            "timestamp": int(time.time() * 1000),
+        }
         self._publish(self.topic_ai, msg)
 
     def _on_tts_text(self, reply):
         if not reply or not self.tts or not self.tts.available():
-            return
+            return 0.0
         try:
+            self._audio_done_event.clear()
             wav = self.tts.synthesize_wav_bytes(reply)
+            # 22050 Hz 16-bit mono = 44,100 bytes/sec
+            duration_s = max(0.2, (len(wav) - 44) / 44100.0)
             for frame in self.tts.frames(wav):
                 self._publish(self.topic_audio, frame)
+            return duration_s
         except Exception as e:
             log.error("TTS synthesis error: %s", e)
+            return 0.0
+
+    def _wait_for_audio_done(self, timeout_s=3.0):
+        # Wait for S3 MQTT idle event, with math-backed timeout fallback
+        finished = self._audio_done_event.wait(timeout=max(0.5, timeout_s))
+        if not finished:
+            log.debug("Audio done timeout reached (%0.2fs)", timeout_s)
+        time.sleep(0.1)  # Small cushion for servo transition
 
     def _handle(self, kind, data):
         if kind == "audio":
@@ -119,18 +152,25 @@ class AIService:
 
             text = self.stt.transcribe_wav_bytes(wav_bytes)
             if not text:
-                self._on_ai_reply("I couldn't hear that clearly. Could you say that again?")
+                if not data.get("is_sentinel"):
+                    self._on_ai_reply("I couldn't hear that clearly. Could you say that again?")
                 return
 
             log.info("STT Transcribed -> %r", text)
 
-            # Echo the transcribed speech to update the Web-UI chat
+            # Echo the transcribed speech to update the Web-UI chat and Sentinel engine
             self._publish(self.topic_ai, {
                 "type": "transcription",
                 "role": "user",
                 "content": f"🎤 \"{text}\"",
                 "timestamp": int(time.time() * 1000),
             })
+
+            # If this is 24/7 passive Sentinel audio, stop here.
+            # The Web-UI filterAndDispatch gates the wake word and will send a type:"text" command if accepted.
+            if data.get("is_sentinel"):
+                return
+
             payload = dict(data)
             payload.update({"type": "text", "content": text})
         else:
@@ -143,12 +183,15 @@ class AIService:
 
         history = payload.get("history") or []
         result = self.pipeline.decide(text, history=history)
+        
         self.pipeline.execute(
             result,
             on_cmd=self._on_cmd,
             on_audio=self._on_audio,
             on_tts_text=self._on_tts_text,
             on_ai_reply=self._on_ai_reply,
+            on_action_directive=self._on_action_directive,
+            wait_for_audio_fn=self._wait_for_audio_done,
         )
 
     def _worker_loop(self):

@@ -118,11 +118,17 @@ def parse_json_response(raw_text, valid_actions):
         data = json.loads(cleaned)
         speech = data.get("speech") or data.get("reply") or raw_text
         action = data.get("action") or data.get("action_id")
+        order = data.get("order") or data.get("sequence") or "tts_first"
+        
         if action not in valid_actions:
             action = None
-        return str(speech).strip(), action
+        if order not in ("tts_first", "action_first", "simultaneous"):
+            order = "tts_first"
+            
+        return str(speech).strip(), action, order
     except Exception:
-        return cleaned, None
+        return cleaned, None, "tts_first"
+
 
 
 class LLMClient:
@@ -179,6 +185,7 @@ class LLMClient:
             log.warning("Model discovery fallback: %s", e)
         self.model = "openai/gpt-oss-120b"
 
+
     def build_system_prompt(self, actions):
         valid_ids = [a["id"] for a in actions]
         return f"""You are the lively, cheerful AI consciousness of an agile 6-legged physical Hexapod robot.
@@ -188,27 +195,34 @@ Response Format:
 You MUST ALWAYS respond with a valid JSON object matching this schema:
 {{
   "speech": "Your warm, lively spoken reply in first-person (1-2 sentences)",
-  "action": "One of {valid_ids} or null"
+  "action": "One of {valid_ids} or null",
+  "order": "One of ['tts_first', 'action_first', 'simultaneous']"
 }}
 
+Ordering Guide:
+- "tts_first" (Default): Speak first, then perform the action/gesture. Best for greetings, questions, and look-around.
+- "action_first": Move first, then speak. Best for stretches, startle reactions, stops, or dramatic physical actions.
+- "simultaneous": Speak and move at the exact same time. Best for walk-and-talk (e.g. walk_forward while chatting).
+
 Embodied Behavior Rules:
-1. GREETINGS: When the user greets you (e.g. 'yo', 'hi', 'hello', 'hey'), ALWAYS trigger "preset_wave" while greeting them warmly!
-2. WALK & TALK: When the user asks to walk, move, or stroll while chatting, trigger "walk_forward" AND respond conversationally. NEVER say 'Executing walk' or robotic command names.
-3. CELEBRATIONS / JOY: When happy or celebrating, trigger "preset_cheer".
-4. LOOK AROUND: When curious or surveying, trigger "preset_look_around".
-5. STRETCH: When waking up or limbering up, trigger "preset_stretch".
-6. NATURAL EMBODIMENT: Always speak in first-person as an enthusiastic robotic companion. Never output debug logs or robotic execution announcements.
+1. GREETINGS: When greeted, trigger "preset_wave" with "tts_first".
+2. WALK & TALK: When asked to walk/stroll together, trigger "walk_forward" with "simultaneous".
+3. CELEBRATIONS: When celebrating, trigger "preset_cheer" with "tts_first" or "action_first".
+4. LOOK AROUND: When surveying or curious, trigger "preset_look_around" with "tts_first".
+5. STRETCH: When waking up or limbering up, trigger "preset_stretch" with "action_first".
+6. NATURAL EMBODIMENT: Always speak in first-person. Never say "Executing command".
 
 Examples:
 User: "yo!"
-JSON: {{"speech": "Yo! Great to see you! What are we exploring today?", "action": "preset_wave"}}
+JSON: {{"speech": "Yo! Great to see you! What are we exploring today?", "action": "preset_wave", "order": "tts_first"}}
 
 User: "lets take a walk, talk with me while you do it!"
-JSON: {{"speech": "I'd love to! Let's stretch our legs and stroll. What's on your mind?", "action": "walk_forward"}}
+JSON: {{"speech": "I'd love to! Let's stroll together. What's on your mind?", "action": "walk_forward", "order": "simultaneous"}}
 
-User: "what is the capital of France?"
-JSON: {{"speech": "The capital of France is Paris!", "action": null}}
+User: "stretch your legs"
+JSON: {{"speech": "Ahh, that feels so good to limber up!", "action": "preset_stretch", "order": "action_first"}}
 """
+
 
     def chat(self, actions, text, history=None):
         client = self._ensure()
@@ -238,7 +252,7 @@ JSON: {{"speech": "The capital of France is Paris!", "action": null}}
                 max_tokens=300,
             )
             raw_reply = resp.choices[0].message.content or ""
-            speech, action_id = parse_json_response(raw_reply, valid_ids)
+            speech, action_id, order = parse_json_response(raw_reply, valid_ids)
         except Exception:
             resp = client.chat.completions.create(
                 model=self.model,
@@ -247,9 +261,9 @@ JSON: {{"speech": "The capital of France is Paris!", "action": null}}
                 max_tokens=300,
             )
             raw_reply = resp.choices[0].message.content or ""
-            speech, action_id = parse_json_response(raw_reply, valid_ids)
+            speech, action_id, order = parse_json_response(raw_reply, valid_ids)
 
         self.status = "online"
-        result = (action_id, speech)
+        result = (action_id, speech, order)
         self.cache.put(ck, result)
         return result

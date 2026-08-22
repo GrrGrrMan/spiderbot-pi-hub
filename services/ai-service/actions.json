@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated": "2026-08-18",
+  "updated": "2026-08-22",
   "notes": "Canonical AI voice action table (P5). Single source of truth for (a) web-ui AI action cards, (b) the RPi ai-service deterministic stage-1 parser, and (c) the LLM function-calling schema. Mirrors: web-ui/src/constants/aiActions.json, pi-hub/services/ai-service/actions.json. Payloads match the S3 motion/audio contract verbatim (PLAN.md §3).",
   "actions": [
     {
@@ -161,6 +161,56 @@
       "topic": "cmd",
       "duration_ms": 5000,
       "reply": "Ahh — nice stretch.",
+      "safety": { "motion": true, "voice": true }
+    },
+    {
+      "id": "preset_pushups",
+      "name": "Push-ups",
+      "keywords": ["pushups", "push ups", "do pushups", "do push ups", "workout", "exercise"],
+      "payload": { "type": "preset", "preset": "pushups" },
+      "topic": "cmd",
+      "duration_ms": 4500,
+      "reply": "Dropping down for push-ups!",
+      "safety": { "motion": true, "voice": true }
+    },
+    {
+      "id": "preset_bow",
+      "name": "Bow",
+      "keywords": ["bow", "take a bow", "curtsy", "formal bow", "do a bow"],
+      "payload": { "type": "preset", "preset": "bow" },
+      "topic": "cmd",
+      "duration_ms": 3500,
+      "reply": "Thank you, thank you!",
+      "safety": { "motion": true, "voice": true }
+    },
+    {
+      "id": "preset_dance",
+      "name": "Dance",
+      "keywords": ["dance", "do a dance", "party", "bust a move", "groove", "dance for me"],
+      "payload": { "type": "preset", "preset": "dance" },
+      "topic": "cmd",
+      "duration_ms": 5000,
+      "reply": "Look at these moves!",
+      "safety": { "motion": true, "voice": true }
+    },
+    {
+      "id": "preset_stand_up",
+      "name": "Stand Tall",
+      "keywords": ["stand tall", "stand up", "high stance", "tall stance", "rise up", "stand high"],
+      "payload": { "type": "preset", "preset": "standUp" },
+      "topic": "cmd",
+      "duration_ms": 3000,
+      "reply": "Standing tall at maximum height.",
+      "safety": { "motion": true, "voice": true }
+    },
+    {
+      "id": "preset_sit_down",
+      "name": "Sit Down",
+      "keywords": ["sit down", "sit", "low stance", "crouch", "drop down", "squat"],
+      "payload": { "type": "preset", "preset": "sitDown" },
+      "topic": "cmd",
+      "duration_ms": 3000,
+      "reply": "Sitting down in low clearance stance.",
       "safety": { "motion": true, "voice": true }
     }
   ]
