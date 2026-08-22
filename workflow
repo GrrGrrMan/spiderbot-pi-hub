@@ -1,6 +1,3 @@
-# 1. Ensure target directory exists on the Pi
-ssh spider@spider-w.local "mkdir -p ~/ai-service"
-
 # 2. Copy the service files (use forward slashes for scp cross-platform compatibility)
 scp -r services/ai-service/* spider@spider-w.local:/home/spider/ai-service/
 

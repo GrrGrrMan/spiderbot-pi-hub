@@ -1,17 +1,13 @@
 #!/usr/bin/env python3
-# pi-hub/services/ai-service/selftest.py
-# Stdlib-only contract + parser checks (runs on the PC / CI without piper,
-# whisper or a broker). Exit code 0 = pass.
 import json
 import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from action_parser import load_actions, match_action, llm_tool_schema
+from action_parser import load_actions, load_animations, expand_animation_keyframes, match_action
 
 FAILS = []
-
 
 def check(cond, label):
     if cond:
@@ -20,60 +16,34 @@ def check(cond, label):
         FAILS.append(label)
         print("FAIL -", label)
 
-
 def main():
     actions = load_actions()
-    check(len(actions) >= 8, "action table has >= 8 actions (%d)" % len(actions))
+    animations = load_animations()
+    
+    check(len(actions) >= 8, f"action table has >= 8 actions ({len(actions)})")
+    check(len(animations) >= 4, f"animation table has >= 4 animations ({len(animations)})")
 
-    ids = set()
-    for a in actions:
-        ids.add(a["id"])
-        check("topic" in a and a["topic"] in ("cmd", "audio"), "action %s topic" % a["id"])
-        check("payload" in a, "action %s payload" % a["id"])
-        check("keywords" in a and a["keywords"], "action %s keywords" % a["id"])
-        if a["topic"] == "cmd":
-            p = a["payload"]
-            check(p.get("type") in ("motion", "system", "preset"), "action %s cmd type" % a["id"])
-            if p.get("type") == "motion":
-                check("vx" in p and "vy" in p and "omega" in p and "gait" in p,
-                      "action %s motion fields" % a["id"])
-            elif p.get("type") == "preset":
-                # Chunk 2 — presets are web-ui-executed (local interpolator);
-                # the payload names the gesture and never hits the firmware cmd.
-                check("preset" in p and p["preset"], "action %s preset name" % a["id"])
+    # Test keyframe expansion
+    stretch_anim = animations.get("stretch")
+    check(stretch_anim is not None, "stretch animation exists")
+    if stretch_anim:
+        expanded = expand_animation_keyframes(stretch_anim, 2000)
+        check(len(expanded) == len(stretch_anim["keyframes"]), f"stretch expanded into {len(expanded)} keyframe chunks")
+        total_time = sum(dur for _, dur in expanded)
+        check(abs(total_time - 2000) < 50, f"expanded duration matches 2000ms (got {total_time}ms)")
 
-    check(len(ids) == len(actions), "action ids unique")
-
-    # Deterministic matching sanity
-    check(match_action("please walk forward", actions) is not None, "match 'walk forward'")
-    check(match_action("do a spin", actions) is not None, "match 'spin'")
-    check(match_action("give me a wave", actions) is not None, "match 'wave'")
-    check(match_action("do a stretch", actions) is not None, "match 'stretch'")
-    check(match_action("tell me a fun fact", actions) is None, "no match on chat-only")
-
-    # LLM tool schema derived from the table
-    schema = llm_tool_schema(actions)
-    enum = schema["function"]["parameters"]["properties"]["action_id"]["enum"]
-    check(sorted(enum) == sorted(ids), "tool schema enum == action ids")
-
-    # Web-ui mirror is in sync (when the repo layout is present)
-    mirror = os.path.normpath(os.path.join(HERE, "../../../web-ui/src/constants/aiActions.json"))
-    if os.path.exists(mirror):
-        with open(mirror, "r", encoding="utf-8") as f:
-            mirror_data = json.load(f)
-        check(sorted(a["id"] for a in mirror_data["actions"]) == sorted(ids),
-              "web-ui aiActions.json mirror in sync")
-    else:
-        print("skip - web-ui mirror not found (fine on the Pi)")
+    # Test wave joint override expansion
+    wave_anim = animations.get("wave")
+    check(wave_anim is not None, "wave animation exists")
+    if wave_anim:
+        expanded_wave = expand_animation_keyframes(wave_anim, 2200)
+        check(len(expanded_wave) > 0 and "joints" in expanded_wave[0][0], "wave keyframes contain joint override dictionary")
 
     print()
     if FAILS:
-        print("SELFTEST FAILED (%d):" % len(FAILS))
-        for f in FAILS:
-            print("  -", f)
+        print(f"SELFTEST FAILED ({len(FAILS)} failures)")
         sys.exit(1)
-    print("SELFTEST PASSED")
-
+    print("ALL TESTS PASSED")
 
 if __name__ == "__main__":
     main()

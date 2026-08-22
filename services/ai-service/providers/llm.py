@@ -1,4 +1,3 @@
-# pi-hub/services/ai-service/providers/llm.py
 import hashlib
 import json
 import logging
@@ -13,14 +12,12 @@ DEFAULT_BASE_URL = "https://api.groq.com/openai/v1"
 DEFAULT_KEY_FILE = "/etc/hexapod-ai/groq.key"
 MAX_LLM_HISTORY = 20
 
+# Active Groq production models (post August 2026 deprecation)
 PREFERRED_MODELS = [
     "openai/gpt-oss-120b",
     "openai/gpt-oss-20b",
     "qwen/qwen3.6-27b",
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
-    "groq/compound-mini",
-    "groq/compound",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
 ]
 
 DEFAULT_CACHE_TTL = int(os.environ.get("AI_LLM_CACHE_TTL", "60"))
@@ -104,7 +101,7 @@ def read_key(key_file=DEFAULT_KEY_FILE):
         return None
 
 
-def parse_json_response(raw_text, valid_actions):
+def parse_json_response(raw_text):
     cleaned = raw_text.strip()
     match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, re.DOTALL)
     if match:
@@ -117,18 +114,20 @@ def parse_json_response(raw_text, valid_actions):
     try:
         data = json.loads(cleaned)
         speech = data.get("speech") or data.get("reply") or raw_text
-        action = data.get("action") or data.get("action_id")
-        order = data.get("order") or data.get("sequence") or "tts_first"
+        order = data.get("order") or "tts_first"
+        timeline = data.get("timeline") or []
         
-        if action not in valid_actions:
-            action = None
+        if not timeline and (data.get("action") or data.get("action_id")):
+            act_id = data.get("action") or data.get("action_id")
+            timeline = [{ "type": "action", "id": act_id, "duration_ms": data.get("duration_ms", 2000) }]
+
         if order not in ("tts_first", "action_first", "simultaneous"):
             order = "tts_first"
             
-        return str(speech).strip(), action, order
-    except Exception:
-        return cleaned, None, "tts_first"
-
+        return str(speech).strip(), timeline, order
+    except Exception as e:
+        log.warning("JSON parse error: %s -> falling back to raw text", e)
+        return cleaned, [], "tts_first"
 
 
 class LLMClient:
@@ -185,49 +184,58 @@ class LLMClient:
             log.warning("Model discovery fallback: %s", e)
         self.model = "openai/gpt-oss-120b"
 
+    def build_system_prompt(self, actions, animations):
+        valid_actions = [a["id"] for a in actions]
+        valid_animations = list(animations.keys())
 
-    def build_system_prompt(self, actions):
-        valid_ids = [a["id"] for a in actions]
         return f"""You are the lively, cheerful AI consciousness of an agile 6-legged physical Hexapod robot.
-You communicate with users and control your physical robotic body in real time.
+You communicate warmly with users and control your physical 6-legged robotic body with fine-grained kinematic precision.
 
-Response Format:
-You MUST ALWAYS respond with a valid JSON object matching this schema:
+RESPONSE SCHEMA:
+You MUST ALWAYS respond with a JSON object strictly matching this format:
 {{
-  "speech": "Your warm, lively spoken reply in first-person (1-2 sentences)",
-  "action": "One of {valid_ids} or null",
-  "order": "One of ['tts_first', 'action_first', 'simultaneous']"
+  "speech": "Your warm, natural spoken reply in first-person (1-2 sentences)",
+  "order": "tts_first | action_first | simultaneous",
+  "timeline": [
+    {{
+      "type": "gait | gesture | pose | pause | audio",
+      "id": "Name of gesture from {valid_animations} or action from {valid_actions}",
+      "duration_ms": 1500,
+      "repeat": 1,
+      "params": {{
+        "vx": 40, "vy": 0, "omega": 0, "gait": "tripod | ripple | wave",
+        "cycle_time": 0.8, "step_height": 30,
+        "tx": 0, "ty": 0, "tz": 0, "rx": 0, "ry": 0, "rz": 0
+      }}
+    }}
+  ]
 }}
 
-Ordering Guide:
-- "tts_first" (Default): Speak first, then perform the action/gesture. Best for greetings, questions, and look-around.
-- "action_first": Move first, then speak. Best for stretches, startle reactions, stops, or dramatic physical actions.
-- "simultaneous": Speak and move at the exact same time. Best for walk-and-talk (e.g. walk_forward while chatting).
+MOTION & PARAMETER TUNING GUIDELINES:
+1. SPEED & GAIT MAPPING:
+• "Fast / Sprint / Quickly" : vx = 65..75 mm/s, cycle_time = 0.6s, gait = "tripod"
+• "Normal / Walk"           : vx = 40..50 mm/s, cycle_time = 0.8s, gait = "tripod"
+• "Slow / Sneak / Creep"    : vx = 15..25 mm/s, cycle_time = 1.4s, gait = "tripod" or "ripple"
+• "Turn / Spin Fast"        : omega = ±50..60 deg/s, cycle_time = 0.7s
+• "Turn / Spin Normal"      : omega = ±30..40 deg/s, cycle_time = 1.0s
 
-Embodied Behavior Rules:
-1. GREETINGS: When greeted, trigger "preset_wave" with "tts_first".
-2. WALK & TALK: When asked to walk/stroll together, trigger "walk_forward" with "simultaneous".
-3. CELEBRATIONS: When celebrating, trigger "preset_cheer" with "tts_first" or "action_first".
-4. LOOK AROUND: When surveying or curious, trigger "preset_look_around" with "tts_first".
-5. STRETCH: When waking up or limbering up, trigger "preset_stretch" with "action_first".
-6. NATURAL EMBODIMENT: Always speak in first-person. Never say "Executing command".
+2. GESTURES & REPETITIONS:
+• Built-in animations: {valid_animations}
+• When the user asks for multiple reps (e.g. "5 pushups", "wave 3 times"), scale down "duration_ms" per rep to 800..1200ms so the entire routine completes smoothly in 4–8 seconds.
+• Example: "Do 5 pushups" -> repeat: 5, duration_ms: 1000.
 
-Examples:
-User: "yo!"
-JSON: {{"speech": "Yo! Great to see you! What are we exploring today?", "action": "preset_wave", "order": "tts_first"}}
+3. CRITICAL ORDERING RULES:
+• "tts_first"    : Default for announcements and starting actions ("Here we go!", "Doing 5 pushups now!", "Walking over!"). The robot announces its intent BEFORE moving.
+• "simultaneous": Speak and move at the same time (Great for short cheers, dancing, or counting reps while moving).
+• "action_first" : ONLY use when the spoken text is a REACTION or CONCLUSION AFTER the action finishes (e.g., "Phew, that was tough!", "Done! How was my form?"). NEVER say "Here I go" or "Starting now" with action_first!
 
-User: "lets take a walk, talk with me while you do it!"
-JSON: {{"speech": "I'd love to! Let's stroll together. What's on your mind?", "action": "walk_forward", "order": "simultaneous"}}
-
-User: "stretch your legs"
-JSON: {{"speech": "Ahh, that feels so good to limber up!", "action": "preset_stretch", "order": "action_first"}}
+4. PURE CHAT / NO MOTION:
+• If the user is just chatting or asking general questions, set "timeline": [].
 """
 
-
-    def chat(self, actions, text, history=None):
+    def chat(self, actions, animations, text, history=None):
         client = self._ensure()
-        system = self.build_system_prompt(actions)
-        valid_ids = [a["id"] for a in actions]
+        system = self.build_system_prompt(actions, animations)
 
         messages = [{"role": "system", "content": system}]
         for h in (history or [])[-MAX_LLM_HISTORY:]:
@@ -244,26 +252,28 @@ JSON: {{"speech": "Ahh, that feels so good to limber up!", "action": "preset_str
             return cached
 
         try:
-            resp = client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                response_format={"type": "json_object"},
-                temperature=0.7,
-                max_tokens=300,
-            )
+            params = {
+                "model": self.model,
+                "messages": messages,
+                "response_format": {"type": "json_object"},
+                "temperature": 0.7,
+                "max_tokens": 2048,  # Generous token room prevents clipping
+            }
+
+            # Disable or minimize reasoning chains so JSON generates instantly without 400 errors
+            if "qwen" in self.model:
+                params["extra_body"] = {"reasoning_effort": "none"}
+            elif "gpt-oss" in self.model:
+                params["extra_body"] = {"reasoning_effort": "low"}
+
+            resp = client.chat.completions.create(**params)
             raw_reply = resp.choices[0].message.content or ""
-            speech, action_id, order = parse_json_response(raw_reply, valid_ids)
-        except Exception:
-            resp = client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=0.7,
-                max_tokens=300,
-            )
-            raw_reply = resp.choices[0].message.content or ""
-            speech, action_id, order = parse_json_response(raw_reply, valid_ids)
+            speech, timeline, order = parse_json_response(raw_reply)
+        except Exception as e:
+            log.warning("LLM API exception: %s", e)
+            raise
 
         self.status = "online"
-        result = (action_id, speech, order)
+        result = (speech, timeline, order)
         self.cache.put(ck, result)
         return result

@@ -123,11 +123,22 @@
       "reply": "Nice and calm.",
       "safety": { "motion": false, "voice": true }
     },
-    {
+{
       "id": "preset_wave",
       "name": "Wave",
       "keywords": ["wave", "wave hello", "say hi", "greet", "give me a wave"],
-      "payload": { "type": "preset", "preset": "wave" },
+      "payload": {
+        "type": "sequence",
+        "name": "wave",
+        "keyframes": [
+          { "duration_ms": 40, "joints": { "rf": { "alpha": 0, "beta": 0, "gamma": 0 } }, "easing": "easeInOutCubic" },
+          { "duration_ms": 400, "joints": { "rf": { "alpha": 0, "beta": 50, "gamma": -45 } }, "easing": "easeInOutQuad" },
+          { "duration_ms": 400, "joints": { "rf": { "alpha": 30, "beta": 50, "gamma": -45 } }, "easing": "easeInOutSine" },
+          { "duration_ms": 400, "joints": { "rf": { "alpha": -30, "beta": 50, "gamma": -45 } }, "easing": "easeInOutSine" },
+          { "duration_ms": 400, "joints": { "rf": { "alpha": 30, "beta": 50, "gamma": -45 } }, "easing": "easeInOutSine" },
+          { "duration_ms": 560, "joints": { "rf": { "alpha": 0, "beta": 0, "gamma": 0 } }, "easing": "easeInOutQuad" }
+        ]
+      },
       "topic": "cmd",
       "duration_ms": 4000,
       "reply": "Hello there — wave!",
@@ -137,7 +148,17 @@
       "id": "preset_cheer",
       "name": "Cheer",
       "keywords": ["cheer", "celebrate", "double wave", "yay", "hooray", "do a cheer"],
-      "payload": { "type": "preset", "preset": "cheer" },
+      "payload": {
+        "type": "sequence",
+        "name": "cheer",
+        "keyframes": [
+          { "duration_ms": 40, "joints": { "rf": { "alpha": 0, "beta": 0, "gamma": 0 }, "lf": { "alpha": 0, "beta": 0, "gamma": 0 } }, "easing": "easeInOutCubic" },
+          { "duration_ms": 600, "joints": { "rf": { "alpha": 20, "beta": 50, "gamma": -45 }, "lf": { "alpha": -20, "beta": 50, "gamma": -45 } }, "easing": "easeInOutQuad" },
+          { "duration_ms": 600, "joints": { "rf": { "alpha": -10, "beta": 55, "gamma": -45 }, "lf": { "alpha": 10, "beta": 55, "gamma": -45 } }, "easing": "easeInOutSine" },
+          { "duration_ms": 600, "joints": { "rf": { "alpha": 20, "beta": 50, "gamma": -45 }, "lf": { "alpha": -20, "beta": 50, "gamma": -45 } }, "easing": "easeInOutSine" },
+          { "duration_ms": 600, "joints": { "rf": { "alpha": 0, "beta": 0, "gamma": 0 }, "lf": { "alpha": 0, "beta": 0, "gamma": 0 } }, "easing": "easeInOutQuad" }
+        ]
+      },
       "topic": "cmd",
       "duration_ms": 4000,
       "reply": "Woo-hoo! Cheering!",
@@ -147,7 +168,16 @@
       "id": "preset_look_around",
       "name": "Look Around",
       "keywords": ["look around", "look left", "look right", "turn head", "survey the room", "look about"],
-      "payload": { "type": "preset", "preset": "lookAround" },
+      "payload": {
+        "type": "sequence",
+        "name": "look_around",
+        "keyframes": [
+          { "duration_ms": 40, "rz": 0, "ry": 0, "easing": "easeInOutCubic" },
+          { "duration_ms": 900, "rz": 25, "ry": 5, "easing": "easeInOutCubic" },
+          { "duration_ms": 1200, "rz": -25, "ry": -5, "easing": "easeInOutCubic" },
+          { "duration_ms": 900, "rz": 0, "ry": 0, "easing": "easeInOutCubic" }
+        ]
+      },
       "topic": "cmd",
       "duration_ms": 5000,
       "reply": "Looking around.",
@@ -157,7 +187,16 @@
       "id": "preset_stretch",
       "name": "Stretch",
       "keywords": ["stretch", "do a stretch", "stretch out", "limber up", "do stretches"],
-      "payload": { "type": "preset", "preset": "stretch" },
+      "payload": {
+        "type": "sequence",
+        "name": "stretch",
+        "keyframes": [
+          { "duration_ms": 40, "tz": 0, "rx": 0, "ry": 0, "rz": 0, "easing": "easeInOutCubic" },
+          { "duration_ms": 700, "tz": 30, "rx": 15, "ry": 0, "rz": 12, "easing": "easeInOutCubic" },
+          { "duration_ms": 700, "tz": -15, "rx": -15, "ry": 0, "rz": -12, "easing": "easeInOutCubic" },
+          { "duration_ms": 600, "tz": 0, "rx": 0, "ry": 0, "rz": 0, "easing": "easeInOutCubic" }
+        ]
+      },
       "topic": "cmd",
       "duration_ms": 5000,
       "reply": "Ahh — nice stretch.",
@@ -167,7 +206,18 @@
       "id": "preset_pushups",
       "name": "Push-ups",
       "keywords": ["pushups", "push ups", "do pushups", "do push ups", "workout", "exercise"],
-      "payload": { "type": "preset", "preset": "pushups" },
+      "payload": {
+        "type": "sequence",
+        "name": "pushups",
+        "keyframes": [
+          { "duration_ms": 40, "tz": 0, "easing": "easeInOutSine" },
+          { "duration_ms": 900, "tz": -60, "easing": "easeInOutSine" },
+          { "duration_ms": 900, "tz": 20, "easing": "easeInOutSine" },
+          { "duration_ms": 900, "tz": -60, "easing": "easeInOutSine" },
+          { "duration_ms": 900, "tz": 20, "easing": "easeInOutSine" },
+          { "duration_ms": 900, "tz": 0, "easing": "easeInOutSine" }
+        ]
+      },
       "topic": "cmd",
       "duration_ms": 4500,
       "reply": "Dropping down for push-ups!",
@@ -177,7 +227,16 @@
       "id": "preset_bow",
       "name": "Bow",
       "keywords": ["bow", "take a bow", "curtsy", "formal bow", "do a bow"],
-      "payload": { "type": "preset", "preset": "bow" },
+      "payload": {
+        "type": "sequence",
+        "name": "bow",
+        "keyframes": [
+          { "duration_ms": 40, "tz": 0, "rx": 0, "easing": "easeInOutCubic" },
+          { "duration_ms": 1400, "tz": -20, "rx": 25, "easing": "easeInOutCubic" },
+          { "duration_ms": 1000, "tz": -20, "rx": 25, "easing": "easeInOutCubic" },
+          { "duration_ms": 1100, "tz": 0, "rx": 0, "easing": "easeInOutCubic" }
+        ]
+      },
       "topic": "cmd",
       "duration_ms": 3500,
       "reply": "Thank you, thank you!",
@@ -187,30 +246,20 @@
       "id": "preset_dance",
       "name": "Dance",
       "keywords": ["dance", "do a dance", "party", "bust a move", "groove", "dance for me"],
-      "payload": { "type": "preset", "preset": "dance" },
+      "payload": {
+        "type": "sequence",
+        "name": "dance",
+        "keyframes": [
+          { "duration_ms": 40, "tx": 0, "ty": 0, "tz": 0, "rx": 0, "ry": 0, "rz": 0, "easing": "easeInOutSine" },
+          { "duration_ms": 1250, "tx": 0, "ty": 20, "tz": 15, "rx": 10, "ry": 10, "rz": 15, "easing": "easeInOutSine" },
+          { "duration_ms": 1250, "tx": 0, "ty": -20, "tz": 0, "rx": -10, "ry": -10, "rz": -15, "easing": "easeInOutSine" },
+          { "duration_ms": 1250, "tx": 0, "ty": 20, "tz": 15, "rx": 10, "ry": 10, "rz": 15, "easing": "easeInOutSine" },
+          { "duration_ms": 1250, "tx": 0, "ty": 0, "tz": 0, "rx": 0, "ry": 0, "rz": 0, "easing": "easeInOutSine" }
+        ]
+      },
       "topic": "cmd",
       "duration_ms": 5000,
       "reply": "Look at these moves!",
-      "safety": { "motion": true, "voice": true }
-    },
-    {
-      "id": "preset_stand_up",
-      "name": "Stand Tall",
-      "keywords": ["stand tall", "stand up", "high stance", "tall stance", "rise up", "stand high"],
-      "payload": { "type": "preset", "preset": "standUp" },
-      "topic": "cmd",
-      "duration_ms": 3000,
-      "reply": "Standing tall at maximum height.",
-      "safety": { "motion": true, "voice": true }
-    },
-    {
-      "id": "preset_sit_down",
-      "name": "Sit Down",
-      "keywords": ["sit down", "sit", "low stance", "crouch", "drop down", "squat"],
-      "payload": { "type": "preset", "preset": "sitDown" },
-      "topic": "cmd",
-      "duration_ms": 3000,
-      "reply": "Sitting down in low clearance stance.",
       "safety": { "motion": true, "voice": true }
     }
   ]

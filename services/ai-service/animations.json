@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "animations": {
+    "stretch": {
+      "mode": "cartesian_body",
+      "default_duration_ms": 2000,
+      "keyframes": [
+        { "t_pct": 0.00, "tz": 0,   "rx": 0,   "ry": 0,  "rz": 0,   "easing": "easeInOutCubic" },
+        { "t_pct": 0.35, "tz": 30,  "rx": 15,  "ry": 0,  "rz": 12,  "easing": "easeInOutCubic" },
+        { "t_pct": 0.70, "tz": -15, "rx": -15, "ry": 0,  "rz": -12, "easing": "easeInOutCubic" },
+        { "t_pct": 1.00, "tz": 0,   "rx": 0,   "ry": 0,  "rz": 0,   "easing": "easeInOutCubic" }
+      ]
+    },
+    "wave": {
+      "mode": "joint_override",
+      "default_duration_ms": 2200,
+      "keyframes": [
+        { "t_pct": 0.0,  "joints": { "rf": { "alpha": 0,   "beta": 0,  "gamma": 0 } },   "easing": "easeOutQuad" },
+        { "t_pct": 0.20, "joints": { "rf": { "alpha": 0,   "beta": 50, "gamma": -45 } }, "easing": "easeInOutQuad" },
+        { "t_pct": 0.40, "joints": { "rf": { "alpha": 30,  "beta": 50, "gamma": -45 } }, "easing": "easeInOutSine" },
+        { "t_pct": 0.60, "joints": { "rf": { "alpha": -30, "beta": 50, "gamma": -45 } }, "easing": "easeInOutSine" },
+        { "t_pct": 0.80, "joints": { "rf": { "alpha": 30,  "beta": 50, "gamma": -45 } }, "easing": "easeInOutSine" },
+        { "t_pct": 1.0,  "joints": { "rf": { "alpha": 0,   "beta": 0,  "gamma": 0 } },   "easing": "easeInOutQuad" }
+      ]
+    },
+    "cheer": {
+      "mode": "joint_override",
+      "default_duration_ms": 2400,
+      "keyframes": [
+        { "t_pct": 0.0,  "joints": { "rf": { "alpha": 0, "beta": 0, "gamma": 0 }, "lf": { "alpha": 0, "beta": 0, "gamma": 0 } }, "easing": "easeOutQuad" },
+        { "t_pct": 0.25, "joints": { "rf": { "alpha": 20, "beta": 50, "gamma": -45 }, "lf": { "alpha": -20, "beta": 50, "gamma": -45 } }, "easing": "easeInOutQuad" },
+        { "t_pct": 0.50, "joints": { "rf": { "alpha": -10, "beta": 55, "gamma": -45 }, "lf": { "alpha": 10, "beta": 55, "gamma": -45 } }, "easing": "easeInOutSine" },
+        { "t_pct": 0.75, "joints": { "rf": { "alpha": 20, "beta": 50, "gamma": -45 }, "lf": { "alpha": -20, "beta": 50, "gamma": -45 } }, "easing": "easeInOutSine" },
+        { "t_pct": 1.0,  "joints": { "rf": { "alpha": 0, "beta": 0, "gamma": 0 }, "lf": { "alpha": 0, "beta": 0, "gamma": 0 } }, "easing": "easeInOutQuad" }
+      ]
+    },
+    "dance": {
+      "mode": "cartesian_body",
+      "default_duration_ms": 2500,
+      "keyframes": [
+        { "t_pct": 0.00, "tx": 0,  "ty": 0,   "tz": 0,  "rx": 0,   "ry": 0,   "rz": 0,   "easing": "easeInOutSine" },
+        { "t_pct": 0.25, "tx": 0,  "ty": 20,  "tz": 15, "rx": 10,  "ry": 10,  "rz": 15,  "easing": "easeInOutSine" },
+        { "t_pct": 0.50, "tx": 0,  "ty": -20, "tz": 0,  "rx": -10, "ry": -10, "rz": -15, "easing": "easeInOutSine" },
+        { "t_pct": 0.75, "tx": 0,  "ty": 20,  "tz": 15, "rx": 10,  "ry": 10,  "rz": 15,  "easing": "easeInOutSine" },
+        { "t_pct": 1.00, "tx": 0,  "ty": 0,   "tz": 0,  "rx": 0,   "ry": 0,   "rz": 0,   "easing": "easeInOutSine" }
+      ]
+    },
+    "bow": {
+      "mode": "cartesian_body",
+      "default_duration_ms": 2000,
+      "keyframes": [
+        { "t_pct": 0.00, "tz": 0,   "rx": 0,  "easing": "easeInOutCubic" },
+        { "t_pct": 0.40, "tz": -20, "rx": 25, "easing": "easeInOutCubic" },
+        { "t_pct": 0.70, "tz": -20, "rx": 25, "easing": "easeInOutCubic" },
+        { "t_pct": 1.00, "tz": 0,   "rx": 0,  "easing": "easeInOutCubic" }
+      ]
+    },
+    "look_around": {
+      "mode": "cartesian_body",
+      "default_duration_ms": 3000,
+      "keyframes": [
+        { "t_pct": 0.00, "rz": 0,   "ry": 0,  "easing": "easeInOutCubic" },
+        { "t_pct": 0.30, "rz": 25,  "ry": 5,  "easing": "easeInOutCubic" },
+        { "t_pct": 0.70, "rz": -25, "ry": -5, "easing": "easeInOutCubic" },
+        { "t_pct": 1.00, "rz": 0,   "ry": 0,  "easing": "easeInOutCubic" }
+      ]
+    },
+    "pushups": {
+      "mode": "cartesian_body",
+      "default_duration_ms": 4500,
+      "keyframes": [
+        { "t_pct": 0.00, "tz": 0,   "easing": "easeInOutSine" },
+        { "t_pct": 0.20, "tz": -60, "easing": "easeInOutSine" },
+        { "t_pct": 0.40, "tz": 20,  "easing": "easeInOutSine" },
+        { "t_pct": 0.60, "tz": -60, "easing": "easeInOutSine" },
+        { "t_pct": 0.80, "tz": 20,  "easing": "easeInOutSine" },
+        { "t_pct": 1.00, "tz": 0,   "easing": "easeInOutSine" }
+      ]
+    }
+  }
+}

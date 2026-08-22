@@ -11,7 +11,7 @@ SRC="$(cd "$(dirname "$0")/.." && pwd)"
 
 echo "==> Installing AI service from $SRC to $APP"
 sudo mkdir -p "$APP" /etc/hexapod-ai
-sudo cp "$SRC"/ai_service.py "$SRC"/action_parser.py "$SRC"/pipeline.py "$SRC"/actions.json "$APP"/
+sudo cp "$SRC"/ai_service.py "$SRC"/action_parser.py "$SRC"/pipeline.py "$SRC"/actions.json "$SRC"/animations.json "$APP"/
 sudo cp -r "$SRC"/providers "$APP"/
 sudo cp "$SRC"/requirements-ai.txt "$APP"/
 
