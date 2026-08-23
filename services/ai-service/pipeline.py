@@ -92,6 +92,11 @@ class Pipeline:
 
                 # Check if act_id resolves to a known keyframe animation
                 anim_key = normalize_animation_name(act_id or step.get("name") or "")
+                target_action_id = anim_key or act_id or step.get("name")
+
+                # Emit directive to notify Web-UI simulation plotter
+                if on_action_directive and target_action_id:
+                    on_action_directive(target_action_id)
 
                 # ── A. Single-Packet Dynamic Sequence Execution ──
                 if stype in ("gesture", "sequence") or (anim_key in self.animations):

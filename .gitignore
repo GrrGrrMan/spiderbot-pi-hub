@@ -22,3 +22,4 @@ Thumbs.db
 # Python Bytecode
 __pycache__/
 *.pyc
+
