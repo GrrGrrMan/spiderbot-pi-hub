@@ -1,0 +1,16 @@
+[Unit]
+Description=V2 Hexapod Camera Stream 1-to-N Fanout Relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=spider
+WorkingDirectory=/opt/hexapod-cam-relay
+EnvironmentFile=/etc/hexapod-cam-relay/cam_relay.env
+ExecStart=/opt/hexapod-cam-relay/venv/bin/python /opt/hexapod-cam-relay/cam_relay.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
