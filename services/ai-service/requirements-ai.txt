@@ -1,6 +1,5 @@
-# pi-hub/services/ai-service/requirements-ai.txt
-# P5 AI voice service (RPi). Install into the service venv.
 paho-mqtt>=2.0
 openai>=1.30
 faster-whisper>=1.0.0
 piper-tts>=1.6.0
+requests>=2.31.0

@@ -1,16 +1,20 @@
 [Unit]
-Description=V2 Hexapod P5 AI Voice Service (local STT/TTS + remote Groq LLM)
-After=network-online.target mosquitto.service
+Description=V2 Hexapod AI Voice & Vision Service (OmniRoute + Local STT/TTS)
+After=network-online.target mosquitto.service hexapod-cam-relay.service
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=spider
 WorkingDirectory=/opt/hexapod-ai
-Environment=LLM_ENABLED=1
-Environment=AI_MODEL_DIR=/opt/hexapod-ai/models
 EnvironmentFile=/etc/hexapod-ai/ai.env
-ExecStart=/opt/hexapod-ai/venv/bin/python /opt/hexapod-ai/ai_service.py --broker localhost --port 1883
+ExecStart=/opt/hexapod-ai/venv/bin/python /opt/hexapod-ai/ai_service.py \
+    --broker localhost \
+    --port 1883 \
+    --llm-base-url ${LLM_BASE_URL} \
+    --llm-model ${LLM_MODEL} \
+    --llm-vision-model ${LLM_VISION_MODEL} \
+    --snapshot-url ${SNAPSHOT_URL}
 Restart=always
 RestartSec=5
 

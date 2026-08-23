@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# pi-hub/services/ai-service/ai_service.py
+# services/ai-service/ai_service.py
 import argparse
 import base64
 import json
@@ -9,12 +9,21 @@ import queue
 import sys
 import threading
 import time
+from typing import Any, Dict, List, Optional
+
+try:
+    import requests
+    _HAS_REQUESTS = True
+except ImportError:
+    import urllib.request
+    _HAS_REQUESTS = False
 
 import paho.mqtt.client as mqtt
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from action_parser import load_actions
+from embodied_agent import EmbodiedAgent
 from pipeline import Pipeline
 from providers.llm import LLMClient
 from providers.stt import STTClient
@@ -26,22 +35,55 @@ log = logging.getLogger("ai.service")
 class AIService:
     def __init__(self, args):
         self.device_id = args.device
+        self.cam_device_id = args.cam_device
         self.broker_host = args.broker
         self.broker_port = args.port
         self.mqtt_user = args.user
         self.mqtt_pass = args.password
+        self.snapshot_url = args.snapshot_url
 
         self.topic_cmd_dev = f"hexapod/{self.device_id}/cmd"
         self.topic_ai = f"hexapod/{self.device_id}/ai"
+        self.topic_ai_config = f"hexapod/{self.device_id}/ai/config"
         self.topic_ai_status = f"hexapod/{self.device_id}/ai/status"
         self.topic_audio = f"hexapod/{self.device_id}/audio"
         self.topic_audio_status = f"hexapod/{self.device_id}/audio/status"
+        self.topic_telemetry = f"hexapod/{self.device_id}/telemetry"
+        self.topic_cam_cmd = f"hexapod/{self.cam_device_id}/cmd"
+
+        self.telemetry: Dict[str, Any] = {}
+        self.abort_event = threading.Event()
+        self._http_session = requests.Session() if _HAS_REQUESTS else None
 
         self.actions = load_actions(args.actions)
-        self.llm = LLMClient(model=args.llm_model, base_url=args.llm_base_url) if args.llm else None
+        self.llm = (
+            LLMClient(
+                base_url=args.llm_base_url,
+                model=args.llm_model,
+                vision_model=args.llm_vision_model,
+                api_key=args.llm_api_key,
+            )
+            if args.llm
+            else None
+        )
         self.stt = STTClient() if args.stt else None
         self.tts = TTSClient() if args.tts else None
         self.pipeline = Pipeline(self.actions, llm=self.llm, stt=self.stt)
+
+        self.embodied_agent = (
+            EmbodiedAgent(
+                llm_client=self.llm,
+                fetch_snapshot_fn=self.fetch_camera_snapshot,
+                publish_s3_cmd_fn=self._on_cmd,
+                publish_cam_cmd_fn=self._on_cam_cmd,
+                speak_fn=self._on_tts_text,
+                reply_fn=self._on_ai_reply,
+                event_fn=self._on_agent_event,
+                abort_event=self.abort_event,
+            )
+            if self.llm
+            else None
+        )
 
         self.mqtt = None
         self._work = queue.Queue(maxsize=16)
@@ -49,12 +91,32 @@ class AIService:
         self._running = True
         self._sender = f"ai-service-{self.device_id}"
         self._audio_done_event = threading.Event()
+        self._last_msg_text = ""
+        self._last_msg_ts = 0.0
+
+    def fetch_camera_snapshot(self) -> Optional[str]:
+        """Fetches the latest frame via persistent requests or urllib fallback."""
+        try:
+            if _HAS_REQUESTS and self._http_session:
+                resp = self._http_session.get(self.snapshot_url, timeout=1.5)
+                if resp.status_code == 200:
+                    return base64.b64encode(resp.content).decode("utf-8")
+            else:
+                req = urllib.request.Request(self.snapshot_url, headers={"User-Agent": "HexapodAI/2.0"})
+                with urllib.request.urlopen(req, timeout=1.5) as resp:
+                    if resp.status == 200:
+                        return base64.b64encode(resp.read()).decode("utf-8")
+        except Exception as e:
+            log.warning("Snapshot fetch failed (%s): %s", self.snapshot_url, e)
+        return None
 
     def _on_connect(self, client, userdata, flags, reason_code, properties=None):
         log.info("Connected to MQTT broker at %s:%s", self.broker_host, self.broker_port)
         client.subscribe(self.topic_ai)
+        client.subscribe(self.topic_ai_config)
         client.subscribe(self.topic_audio_status)
-        log.info("Listening on AI: %s and AudioStatus: %s", self.topic_ai, self.topic_audio_status)
+        client.subscribe(self.topic_telemetry)
+        log.info("Subscribed -> %s, %s, %s, %s", self.topic_ai, self.topic_ai_config, self.topic_audio_status, self.topic_telemetry)
 
     def _on_message(self, client, userdata, msg):
         try:
@@ -63,7 +125,16 @@ class AIService:
             log.warning("Invalid JSON payload on %s: %s", msg.topic, e)
             return
 
-        # Listen to S3 hardware playback status
+        if msg.topic == self.topic_ai_config:
+            if self.llm and isinstance(data, dict):
+                self.llm.update_config(data)
+                self._broadcast_status()
+            return
+
+        if msg.topic == self.topic_telemetry:
+            self.telemetry = data
+            return
+
         if msg.topic == self.topic_audio_status:
             if data.get("state") == "idle":
                 self._audio_done_event.set()
@@ -74,6 +145,31 @@ class AIService:
         if msg.topic == self.topic_ai:
             if data.get("role") in ("assistant", "system") or data.get("type") in ("transcription", "directive") or data.get("sender") == self._sender:
                 return
+
+            text_content = str(data.get("content", "")).lower().strip()
+
+            if text_content in ("stop", "halt", "freeze", "power off", "sleep", "shut down", "hold", "emergency stop"):
+                log.warning("[EMERGENCY STOP] Preempting active tasks immediately!")
+                self.abort_event.set()
+                while not self._work.empty():
+                    try: self._work.get_nowait()
+                    except queue.Empty: break
+
+                if text_content in ("freeze", "power off", "sleep", "shut down"):
+                    self._on_cmd({"type": "system", "power": False})
+                    self._on_ai_reply("Going limp. Goodnight!")
+                else:
+                    self._on_cmd({"type": "motion", "gait": "tripod", "vx": 0, "vy": 0, "omega": 0})
+                    self._on_ai_reply("Stopping.")
+                return
+
+            now = time.time()
+            if text_content and text_content == self._last_msg_text and (now - self._last_msg_ts) < 0.3:
+                log.debug("Debouncing duplicate message: %s", text_content)
+                return
+            self._last_msg_text = text_content
+            self._last_msg_ts = now
+
             self._enqueue(data.get("type", "text"), data)
 
     def _enqueue(self, kind, data):
@@ -85,11 +181,13 @@ class AIService:
     def _publish(self, topic, payload, qos=0):
         if not self.mqtt or not self.mqtt.is_connected():
             return
-        compact = json.dumps(payload)
-        self.mqtt.publish(topic, compact, qos=qos)
+        self.mqtt.publish(topic, json.dumps(payload), qos=qos)
 
     def _on_cmd(self, payload):
         self._publish(self.topic_cmd_dev, payload)
+
+    def _on_cam_cmd(self, payload):
+        self._publish(self.topic_cam_cmd, payload)
 
     def _on_audio(self, payload):
         self._publish(self.topic_audio, payload)
@@ -118,15 +216,25 @@ class AIService:
         }
         self._publish(self.topic_ai, msg)
 
+    def _on_agent_event(self, event_data: dict):
+        msg = {
+            "type": "agent_event",
+            "sender": self._sender,
+            "timestamp": int(time.time() * 1000),
+            **event_data,
+        }
+        self._publish(self.topic_ai, msg)
+
     def _on_tts_text(self, reply):
         if not reply or not self.tts or not self.tts.available():
             return 0.0
         try:
             self._audio_done_event.clear()
             wav = self.tts.synthesize_wav_bytes(reply)
-            # 22050 Hz 16-bit mono = 44,100 bytes/sec
             duration_s = max(0.2, (len(wav) - 44) / 44100.0)
             for frame in self.tts.frames(wav):
+                if self.abort_event.is_set():
+                    break
                 self._publish(self.topic_audio, frame)
             return duration_s
         except Exception as e:
@@ -134,13 +242,14 @@ class AIService:
             return 0.0
 
     def _wait_for_audio_done(self, timeout_s=3.0):
-        # Wait for S3 MQTT idle event, with math-backed timeout fallback
         finished = self._audio_done_event.wait(timeout=max(0.5, timeout_s))
         if not finished:
-            log.debug("Audio done timeout reached (%0.2fs)", timeout_s)
-        time.sleep(0.1)  # Small cushion for servo transition
+            log.debug("Audio timeout reached (%0.2fs)", timeout_s)
+        time.sleep(0.1)
 
     def _handle(self, kind, data):
+        self.abort_event.clear()
+
         if kind == "audio":
             content = data.get("content", "")
             if not content:
@@ -157,8 +266,6 @@ class AIService:
                 return
 
             log.info("STT Transcribed -> %r", text)
-
-            # Echo the transcribed speech to update the Web-UI chat and Sentinel engine
             self._publish(self.topic_ai, {
                 "type": "transcription",
                 "role": "user",
@@ -166,8 +273,6 @@ class AIService:
                 "timestamp": int(time.time() * 1000),
             })
 
-            # If this is 24/7 passive Sentinel audio, stop here.
-            # The Web-UI filterAndDispatch gates the wake word and will send a type:"text" command if accepted.
             if data.get("is_sentinel"):
                 return
 
@@ -182,16 +287,23 @@ class AIService:
             return
 
         history = payload.get("history") or []
-        result = self.pipeline.decide(text, history=history)
         
+        # Grab current camera snapshot so every reasoning turn has vision context
+        current_frame = self.fetch_camera_snapshot()
+
+        result = self.pipeline.decide(text, history=history, image_b64=current_frame)
+
         self.pipeline.execute(
             result,
+            embodied_agent=self.embodied_agent,
             on_cmd=self._on_cmd,
             on_audio=self._on_audio,
             on_tts_text=self._on_tts_text,
             on_ai_reply=self._on_ai_reply,
             on_action_directive=self._on_action_directive,
+            on_agent_event=self._on_agent_event,
             wait_for_audio_fn=self._wait_for_audio_done,
+            abort_event=self.abort_event,
         )
 
     def _worker_loop(self):
@@ -208,26 +320,28 @@ class AIService:
             finally:
                 self._busy = False
 
+    def _broadcast_status(self):
+        state = "online" if (self.mqtt and self.mqtt.is_connected()) else "offline"
+        if self._busy and state == "online":
+            state = "busy"
+
+        payload = {
+            "state": state,
+            "llm": {
+                "provider": "omniroute",
+                "base_url": (self.llm.base_url if self.llm else None),
+                "status": (self.llm.status if self.llm else "offline"),
+                **(self.llm.get_config_dict() if self.llm else {}),
+            },
+            "stt": bool(self.stt),
+            "tts": bool(self.tts),
+            "ts": int(time.time() * 1000),
+        }
+        self._publish(self.topic_ai_status, payload)
+
     def _status_loop(self):
         while self._running:
-            state = "online" if (self.mqtt and self.mqtt.is_connected()) else "offline"
-            if self._busy and state == "online":
-                state = "busy"
-
-            payload = {
-                "state": state,
-                "llm": {
-                    "provider": "groq" if self.llm else "none",
-                    "model": (self.llm.model if self.llm else None),
-                    "status": (self.llm.status if self.llm else "offline"),
-                },
-                "stt": bool(self.stt),
-                "tts": bool(self.tts),
-                "ts": int(time.time() * 1000),
-            }
-            if self.llm and self.llm.cache:
-                payload["llm"]["cache"] = self.llm.cache_stats()
-            self._publish(self.topic_ai_status, payload)
+            self._broadcast_status()
             time.sleep(4)
 
     def run(self):
@@ -242,7 +356,7 @@ class AIService:
         threading.Thread(target=self._worker_loop, daemon=True, name="ai-worker").start()
         threading.Thread(target=self._status_loop, daemon=True, name="ai-heartbeat").start()
 
-        log.info("AI service online for device %s", self.device_id)
+        log.info("OmniRoute AI service online for device %s", self.device_id)
         try:
             while self._running:
                 time.sleep(1)
@@ -254,15 +368,19 @@ class AIService:
 
 
 def main():
-    ap = argparse.ArgumentParser(description="V2 Hexapod AI Voice & Companion Service")
+    ap = argparse.ArgumentParser(description="V2 Hexapod AI Voice & Vision Service (OmniRoute Integrated)")
     ap.add_argument("--device", default=os.environ.get("DEVICE_ID", "hexapod-s3-01"))
+    ap.add_argument("--cam-device", default=os.environ.get("CAM_DEVICE_ID", "hexapod-cam-01"))
     ap.add_argument("--broker", default=os.environ.get("MQTT_HOST", "localhost"))
     ap.add_argument("--port", type=int, default=int(os.environ.get("MQTT_PORT", "1883")))
     ap.add_argument("--user", default=os.environ.get("MQTT_USER"))
     ap.add_argument("--password", default=os.environ.get("MQTT_PASS"))
     ap.add_argument("--actions", default=os.path.join(os.path.dirname(__file__), "actions.json"))
-    ap.add_argument("--llm-model", default=os.environ.get("LLM_MODEL"))
-    ap.add_argument("--llm-base-url", default=os.environ.get("LLM_BASE_URL", "https://api.groq.com/openai/v1"))
+    ap.add_argument("--llm-base-url", default=os.environ.get("LLM_BASE_URL", "http://127.0.0.1:20128/v1"))
+    ap.add_argument("--llm-model", default=os.environ.get("LLM_MODEL", "hexapod-vision"))
+    ap.add_argument("--llm-vision-model", default=os.environ.get("LLM_VISION_MODEL", "hexapod-vision"))
+    ap.add_argument("--llm-api-key", default=os.environ.get("LLM_API_KEY") or os.environ.get("GROQ_API_KEY", "spiderbot"))
+    ap.add_argument("--snapshot-url", default=os.environ.get("SNAPSHOT_URL", "http://127.0.0.1:8088/snapshot"))
     ap.add_argument("--no-llm", action="store_true")
     ap.add_argument("--no-stt", action="store_true")
     ap.add_argument("--no-tts", action="store_true")

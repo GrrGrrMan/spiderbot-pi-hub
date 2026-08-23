@@ -1,0 +1,16 @@
+[Unit]
+Description=OmniRoute Multi-Model AI Gateway Proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=spider
+WorkingDirectory=/opt/omniroute
+EnvironmentFile=/etc/omniroute/omniroute.env
+ExecStart=/usr/local/bin/omniroute start --host 0.0.0.0 --port 20128
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

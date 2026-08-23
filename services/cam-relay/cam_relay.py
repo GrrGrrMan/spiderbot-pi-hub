@@ -12,7 +12,6 @@ import json
 import logging
 import os
 import signal
-import sys
 import time
 from typing import Optional, Set
 from aiohttp import ClientSession, ClientTimeout, web
@@ -24,8 +23,9 @@ logging.basicConfig(
 )
 log = logging.getLogger("cam.relay")
 
+MAX_BUFFER_BYTES = 512 * 1024  # 512 KB safety threshold
 
-# ── 1. MODULAR CONFIGURATION LOADER ──────────────────────────────────────────
+
 @dataclass
 class RelayConfig:
     upstream_url: str
@@ -83,7 +83,6 @@ class RelayConfig:
         )
 
 
-# ── 2. IN-MEMORY FRAME HUB ───────────────────────────────────────────────────
 class FrameHub:
     def __init__(self, config: RelayConfig):
         self.config = config
@@ -138,7 +137,6 @@ class FrameHub:
                 pass
 
 
-# ── 3. DYNAMIC UPSTREAM CONSUMER WITH MQTT AUTO-DISCOVERY ────────────────────
 class UpstreamConsumer:
     def __init__(self, config: RelayConfig, hub: FrameHub, loop: asyncio.AbstractEventLoop):
         self.config = config
@@ -226,6 +224,12 @@ class UpstreamConsumer:
 
                             buffer.extend(chunk)
 
+                            # Safety Guard: Clear buffer if corrupted
+                            if len(buffer) > MAX_BUFFER_BYTES:
+                                log.warning("Buffer overflow detected (%d bytes) - clearing buffer", len(buffer))
+                                buffer.clear()
+                                continue
+
                             while True:
                                 start = buffer.find(b"\xff\xd8")
                                 if start == -1:
@@ -251,7 +255,6 @@ class UpstreamConsumer:
             await asyncio.sleep(2.0)
 
 
-# ── 4. RELAY HTTP SERVER ─────────────────────────────────────────────────────
 class RelayHttpServer:
     def __init__(self, config: RelayConfig, hub: FrameHub):
         self.config = config
@@ -328,7 +331,6 @@ class RelayHttpServer:
         })
 
 
-# ── 5. MAIN ENTRYPOINT ───────────────────────────────────────────────────────
 async def main():
     config = RelayConfig.load()
     loop = asyncio.get_running_loop()
