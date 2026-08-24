@@ -1,6 +1,7 @@
 import json
 import os
 import re
+from typing import Any, Dict, List, Optional, Tuple
 
 DEFAULT_ACTIONS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "actions.json")
 DEFAULT_ANIMATIONS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "animations.json")
@@ -39,6 +40,40 @@ def normalize_animation_name(name):
         "sitDown": "sit_down",
     }
     return aliases.get(n, n)
+
+
+WAKE_PHONETICS = [
+    "spider", "spotter", "spader", "spyder", "hexapod", "hexa", "spida", "spotta", "spitter", "spada", "hexap", "spodder"
+]
+WAKE_PREFIXES = ["hey", "ok", "okay", "hi", "hello", "a", "yo"]
+
+
+def extract_wake_command(text: str) -> tuple[Optional[str], str]:
+    """
+    Scans transcript, discards chatter before the wake word,
+    and returns (status, extracted_command).
+    status: 'command' | 'standalone' | None
+    """
+    if not text:
+        return None, ""
+
+    cleaned = re.sub(r"[^\w\s]", " ", text.lower())
+    words = cleaned.split()
+    wake_idx = -1
+
+    for i, word in enumerate(words):
+        if word in WAKE_PHONETICS:
+            wake_idx = i + 1
+            break
+
+    if wake_idx == -1:
+        return None, ""
+
+    command_words = words[wake_idx:]
+    if not command_words:
+        return "standalone", ""
+
+    return "command", " ".join(command_words)
 
 
 def match_action(text, actions):

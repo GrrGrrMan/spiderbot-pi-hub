@@ -71,6 +71,8 @@ class STTClient:
                     res = cloud.audio.transcriptions.create(
                         model="whisper-large-v3-turbo",
                         file=buf,
+                        language="en",
+                        prompt="Hey Spider, Hey Hexapod.",
                         response_format="text"
                     )
                 except Exception:
@@ -78,6 +80,8 @@ class STTClient:
                     res = cloud.audio.transcriptions.create(
                         model="whisper-large-v3",
                         file=buf,
+                        language="en",
+                        prompt="Hey Spider, Hey Hexapod.",
                         response_format="text"
                     )
                 text = res.strip() if isinstance(res, str) else getattr(res, "text", "").strip()

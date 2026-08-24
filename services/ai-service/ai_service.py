@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -22,8 +23,9 @@ import paho.mqtt.client as mqtt
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from action_parser import load_actions
+from action_parser import load_actions, load_animations, extract_wake_command
 from embodied_agent import EmbodiedAgent
+from memory_manager import MemoryManager, MemoryMode
 from pipeline import Pipeline
 from providers.llm import LLMClient
 from providers.stt import STTClient
@@ -46,6 +48,8 @@ class AIService:
         self.topic_ai = f"hexapod/{self.device_id}/ai"
         self.topic_ai_config = f"hexapod/{self.device_id}/ai/config"
         self.topic_ai_status = f"hexapod/{self.device_id}/ai/status"
+        self.topic_ai_memory_cmd = f"hexapod/{self.device_id}/ai/memory/cmd"
+        self.topic_ai_memory_state = f"hexapod/{self.device_id}/ai/memory/state"
         self.topic_audio = f"hexapod/{self.device_id}/audio"
         self.topic_audio_status = f"hexapod/{self.device_id}/audio/status"
         self.topic_telemetry = f"hexapod/{self.device_id}/telemetry"
@@ -56,6 +60,10 @@ class AIService:
         self._http_session = requests.Session() if _HAS_REQUESTS else None
 
         self.actions = load_actions(args.actions)
+        self.animations = load_animations()
+        self.wake_words = [
+            w.strip().lower() for w in os.environ.get("WAKE_WORDS", "hey spider,hey hexapod,ok spider").split(",") if w.strip()
+        ]
         self.llm = (
             LLMClient(
                 base_url=args.llm_base_url,
@@ -67,7 +75,22 @@ class AIService:
             else None
         )
         self.stt = STTClient() if args.stt else None
-        self.tts = TTSClient() if args.tts else None
+        self.tts = (
+            TTSClient(
+                base_url=args.llm_base_url,
+                api_key=args.llm_api_key,
+                model=os.environ.get("TTS_MODEL", "local"),
+            )
+            if args.tts
+            else None
+        )
+        if self.tts:
+            self.tts.warmup()
+
+        self.memory = MemoryManager(
+            storage_path="/opt/hexapod-ai/memory_pool.json",
+            mode=os.environ.get("MEMORY_MODE", MemoryMode.SESSION),
+        )
         self.pipeline = Pipeline(self.actions, llm=self.llm, stt=self.stt)
 
         self.embodied_agent = (
@@ -79,6 +102,7 @@ class AIService:
                 speak_fn=self._on_tts_text,
                 reply_fn=self._on_ai_reply,
                 event_fn=self._on_agent_event,
+                directive_fn=self._on_action_directive,
                 abort_event=self.abort_event,
             )
             if self.llm
@@ -114,9 +138,11 @@ class AIService:
         log.info("Connected to MQTT broker at %s:%s", self.broker_host, self.broker_port)
         client.subscribe(self.topic_ai)
         client.subscribe(self.topic_ai_config)
+        client.subscribe(self.topic_ai_memory_cmd)
         client.subscribe(self.topic_audio_status)
         client.subscribe(self.topic_telemetry)
-        log.info("Subscribed -> %s, %s, %s, %s", self.topic_ai, self.topic_ai_config, self.topic_audio_status, self.topic_telemetry)
+        log.info("Subscribed -> %s, %s, %s, %s, %s", self.topic_ai, self.topic_ai_config, self.topic_ai_memory_cmd, self.topic_audio_status, self.topic_telemetry)
+        self._broadcast_memory_state()
 
     def _on_message(self, client, userdata, msg):
         try:
@@ -125,9 +151,37 @@ class AIService:
             log.warning("Invalid JSON payload on %s: %s", msg.topic, e)
             return
 
+        if msg.topic == self.topic_ai_memory_cmd:
+            if isinstance(data, dict):
+                action = data.get("action", "")
+                if action == "set_mode" and "mode" in data:
+                    self.memory.set_mode(data["mode"])
+                elif action == "set_fact" and "key" in data and "value" in data:
+                    self.memory.set_fact(data["key"], data["value"])
+                elif action == "delete_fact" and "key" in data:
+                    self.memory.delete_fact(data["key"])
+                elif action == "clear_session":
+                    self.memory.clear_session()
+                elif action == "clear_all":
+                    self.memory.clear_all()
+                self._broadcast_memory_state()
+                self._broadcast_status()
+            return
+
         if msg.topic == self.topic_ai_config:
-            if self.llm and isinstance(data, dict):
-                self.llm.update_config(data)
+            if isinstance(data, dict):
+                if "memory" in data and isinstance(data["memory"], dict):
+                    if "mode" in data["memory"]:
+                        self.memory.set_mode(data["memory"]["mode"])
+                if "sentinel" in data and isinstance(data["sentinel"], dict):
+                    if "wake_words" in data["sentinel"]:
+                        self.wake_words = [str(w).lower().strip() for w in data["sentinel"]["wake_words"] if str(w).strip()]
+                if "wake_words" in data and isinstance(data["wake_words"], list):
+                    self.wake_words = [str(w).lower().strip() for w in data["wake_words"] if str(w).strip()]
+                if self.llm:
+                    llm_cfg = data.get("llm", data)
+                    self.llm.update_config(llm_cfg)
+                self._broadcast_memory_state()
                 self._broadcast_status()
             return
 
@@ -143,7 +197,7 @@ class AIService:
             return
 
         if msg.topic == self.topic_ai:
-            if data.get("role") in ("assistant", "system") or data.get("type") in ("transcription", "directive") or data.get("sender") == self._sender:
+            if data.get("role") in ("assistant", "system") or data.get("type") in ("transcription", "directive", "sentinel_event") or data.get("sender") == self._sender:
                 return
 
             text_content = str(data.get("content", "")).lower().strip()
@@ -178,10 +232,10 @@ class AIService:
         except queue.Full:
             log.warning("Queue full — dropping message")
 
-    def _publish(self, topic, payload, qos=0):
+    def _publish(self, topic, payload, qos=0, retain=False):
         if not self.mqtt or not self.mqtt.is_connected():
             return
-        self.mqtt.publish(topic, json.dumps(payload), qos=qos)
+        self.mqtt.publish(topic, json.dumps(payload), qos=qos, retain=retain)
 
     def _on_cmd(self, payload):
         self._publish(self.topic_cmd_dev, payload)
@@ -204,16 +258,21 @@ class AIService:
         }
         self._publish(self.topic_ai, msg)
 
-    def _on_action_directive(self, action_id):
-        if not action_id:
+    def _on_action_directive(self, action_payload):
+        if not action_payload:
             return
         msg = {
             "type": "directive",
             "role": "assistant",
             "sender": self._sender,
-            "action_id": action_id,
             "timestamp": int(time.time() * 1000),
         }
+        if isinstance(action_payload, dict):
+            msg.update(action_payload)
+            if "name" in action_payload and "action_id" not in msg:
+                msg["action_id"] = action_payload["name"]
+        else:
+            msg["action_id"] = str(action_payload)
         self._publish(self.topic_ai, msg)
 
     def _on_agent_event(self, event_data: dict):
@@ -266,15 +325,43 @@ class AIService:
                 return
 
             log.info("STT Transcribed -> %r", text)
+
+            # Check if this audio slice came from 24/7 Smart Speaker mode
+            if data.get("is_sentinel"):
+                wake_status, extracted_cmd = extract_wake_command(text)
+                if wake_status is None:
+                    self._publish(self.topic_ai, {
+                        "type": "sentinel_event",
+                        "state": "ignored",
+                        "transcript": text,
+                        "timestamp": int(time.time() * 1000),
+                    })
+                    return
+
+                if wake_status == "standalone":
+                    self._publish(self.topic_ai, {
+                        "type": "sentinel_event",
+                        "state": "listening_prompt",
+                        "transcript": text,
+                        "timestamp": int(time.time() * 1000),
+                    })
+                    return
+
+                text = extracted_cmd
+                self._publish(self.topic_ai, {
+                    "type": "sentinel_event",
+                    "state": "recognized",
+                    "transcript": text,
+                    "command": text,
+                    "timestamp": int(time.time() * 1000),
+                })
+
             self._publish(self.topic_ai, {
                 "type": "transcription",
                 "role": "user",
                 "content": f"🎤 \"{text}\"",
                 "timestamp": int(time.time() * 1000),
             })
-
-            if data.get("is_sentinel"):
-                return
 
             payload = dict(data)
             payload.update({"type": "text", "content": text})
@@ -286,17 +373,43 @@ class AIService:
         if not text:
             return
 
-        history = payload.get("history") or []
-        
-        # Grab current camera snapshot so every reasoning turn has vision context
+        # Natural Voice Commands for Memory Control
+        norm_cmd = text.lower().strip()
+        if norm_cmd in ("clear memory", "forget everything", "reset chat", "clear history", "reset memory"):
+            self.memory.clear_session()
+            self._broadcast_memory_state()
+            self._on_ai_reply("Session history cleared! Starting fresh.")
+            return
+        elif norm_cmd.startswith("remember that ") or norm_cmd.startswith("remember: "):
+            fact_body = re.sub(r"^remember(\s+that|:)\s+", "", text, flags=re.IGNORECASE).strip()
+            if fact_body:
+                key = f"fact_{int(time.time())}"
+                self.memory.set_fact(key, fact_body)
+                self._broadcast_memory_state()
+                self._on_ai_reply("I've committed that to my long-term memory pool.")
+                return
+
+        # 1. Update session buffer, broadcast state to UI, and grab memory pool block
+        self.memory.add_user(text)
+        self._broadcast_memory_state()
+        session_history = self.memory.get_context_history()
+        memory_block = self.memory.get_memory_pool_prompt_block()
+
+        # 2. Grab camera snapshot for vision context
         current_frame = self.fetch_camera_snapshot()
 
-        result = self.pipeline.decide(text, history=history, image_b64=current_frame)
+        result = self.pipeline.decide(text, history=session_history, image_b64=current_frame, memory_block=memory_block)
+
+        # 3. Store assistant response into memory
+        if result.reply:
+            self.memory.add_assistant(result.reply)
+            self._broadcast_memory_state()
 
         self.pipeline.execute(
             result,
             embodied_agent=self.embodied_agent,
             on_cmd=self._on_cmd,
+            on_cam_cmd=self._on_cam_cmd,
             on_audio=self._on_audio,
             on_tts_text=self._on_tts_text,
             on_ai_reply=self._on_ai_reply,
@@ -320,6 +433,12 @@ class AIService:
             finally:
                 self._busy = False
 
+    def _broadcast_memory_state(self):
+        if not self.mqtt or not self.mqtt.is_connected():
+            return
+        payload = self.memory.get_state_dict()
+        self._publish(self.topic_ai_memory_state, payload, retain=True)
+
     def _broadcast_status(self):
         state = "online" if (self.mqtt and self.mqtt.is_connected()) else "offline"
         if self._busy and state == "online":
@@ -327,17 +446,23 @@ class AIService:
 
         payload = {
             "state": state,
+            "memory": self.memory.get_state_dict(),
+            "sentinel": {
+                "wake_words": self.wake_words,
+            },
             "llm": {
                 "provider": "omniroute",
                 "base_url": (self.llm.base_url if self.llm else None),
                 "status": (self.llm.status if self.llm else "offline"),
                 **(self.llm.get_config_dict() if self.llm else {}),
             },
+            "actions": self.actions,
+            "animations": list(self.animations.keys()),
             "stt": bool(self.stt),
             "tts": bool(self.tts),
             "ts": int(time.time() * 1000),
         }
-        self._publish(self.topic_ai_status, payload)
+        self._publish(self.topic_ai_status, payload, retain=True)
 
     def _status_loop(self):
         while self._running:

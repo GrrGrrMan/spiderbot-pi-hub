@@ -24,22 +24,42 @@ def extract_clean_objective(raw_text: str) -> str:
     return cleaned[0].upper() + cleaned[1:] if cleaned else "Procedural Task"
 
 
-def safe_extract_json(raw_text: str) -> Dict[str, Any]:
-    """Robustly extracts JSON from raw LLM text with or without markdown code fences."""
+def safe_extract_json(raw_text: str) -> Any:
+    """Robustly extracts JSON (dict or list) from raw LLM text with or without markdown fences."""
     cleaned = (raw_text or "").strip()
-    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, re.DOTALL)
-    if match:
-        cleaned = match.group(1).strip()
-    elif "{" in cleaned and "}" in cleaned:
-        start = cleaned.find("{")
-        end = cleaned.rfind("}") + 1
-        cleaned = cleaned[start:end].strip()
 
+    # 1. Match code blocks ```json ... ``` or ``` ... ```
+    match = re.search(r"```(?:json)?\s*([\{\[].*?[\}\]])\s*```", cleaned, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(1).strip())
+        except Exception:
+            pass
+
+    # 2. Try direct json.loads on entire string
     try:
         return json.loads(cleaned)
-    except Exception as e:
-        log.warning("JSON decode failed on: %r (%s)", cleaned[:100], e)
-        return {}
+    except Exception:
+        pass
+
+    # 3. Find outermost matching braces or brackets
+    start_obj, end_obj = cleaned.find("{"), cleaned.rfind("}")
+    start_arr, end_arr = cleaned.find("["), cleaned.rfind("]")
+
+    candidates = []
+    if start_obj != -1 and end_obj != -1 and end_obj > start_obj:
+        candidates.append((start_obj, end_obj + 1))
+    if start_arr != -1 and end_arr != -1 and end_arr > start_arr:
+        candidates.append((start_arr, end_arr + 1))
+
+    candidates.sort(key=lambda x: x[0])
+    for start, end in candidates:
+        try:
+            return json.loads(cleaned[start:end].strip())
+        except Exception:
+            pass
+
+    return {}
 
 
 class EmbodiedAgent:
@@ -52,6 +72,7 @@ class EmbodiedAgent:
         speak_fn: Callable[[str], float],
         reply_fn: Callable[[str], None],
         event_fn: Optional[Callable[[Dict[str, Any]], None]] = None,
+        directive_fn: Optional[Callable[[Any], None]] = None,
         abort_event: Optional[threading.Event] = None,
     ):
         self.llm = llm_client
@@ -61,6 +82,7 @@ class EmbodiedAgent:
         self.speak = speak_fn
         self.reply = reply_fn
         self.event = event_fn
+        self.directive = directive_fn
         self.abort_event = abort_event or threading.Event()
         self.animations = load_animations()
 
@@ -79,28 +101,53 @@ class EmbodiedAgent:
     def _stop_motion(self):
         self.publish_s3_cmd({"type": "motion", "gait": "tripod", "vx": 0, "vy": 0, "omega": 0})
 
-    def _move(self, vx: float = 0, omega: float = 0, duration_s: float = 1.5) -> bool:
+    def _move(
+        self,
+        vx: float = 0,
+        omega: float = 0,
+        duration_s: float = 1.5,
+        vy: float = 0,
+        gait: str = "tripod",
+        step_height: float = 35,
+        cycle_time: float = 0.8,
+        hip_stance: float = 20,
+        pos_z: float = 0,
+    ) -> bool:
         if self.abort_event.is_set():
             return False
-        
-        # Clamp motion to safe physical limits
-        duration_s = max(0.5, min(8.0, duration_s))
+
+        duration_s = max(0.2, min(15.0, duration_s))
         vx = max(-60.0, min(60.0, vx))
+        vy = max(-60.0, min(60.0, vy))
         omega = max(-50.0, min(50.0, omega))
+
+        resolved_id = "spin" if (vx == 0 and omega > 40) else "turn_right" if omega > 0 else "turn_left" if omega < 0 else "walk_backward" if vx < 0 else "walk_forward"
+        resolved_name = resolved_id.replace("_", " ").title()
 
         motion_payload = {
             "type": "motion",
-            "gait": "tripod",
+            "gait": gait,
             "vx": vx,
-            "vy": 0,
+            "vy": vy,
             "omega": omega,
-            "step_height": 35,
-            "cycle_time": 0.8,
+            "step_height": step_height,
+            "cycle_time": cycle_time,
+            "hip_stance": hip_stance,
+            "pos_z": pos_z,
+            "duration_ms": int(duration_s * 1000),
         }
         self.publish_s3_cmd(motion_payload)
+        if self.directive:
+            self.directive({
+                "type": "directive",
+                "action_id": resolved_id,
+                "name": resolved_name,
+                "duration_ms": int(duration_s * 1000),
+                "payload": motion_payload,
+            })
         ok = self._sleep_interruptible(duration_s)
         self._stop_motion()
-        self._sleep_interruptible(0.1)
+        self._sleep_interruptible(0.05)
         return ok
 
     def _execute_gesture(self, gesture_name: str):
@@ -119,6 +166,14 @@ class EmbodiedAgent:
                 "keyframes": compiled_kfs,
             }
             self.publish_s3_cmd(payload)
+            if self.directive:
+                self.directive({
+                    "type": "directive",
+                    "action_id": anim_key,
+                    "name": anim_key.replace("_", " ").title(),
+                    "duration_ms": total_ms,
+                    "payload": payload,
+                })
             self._sleep_interruptible(total_ms / 1000.0)
         else:
             log.warning("Requested gesture '%s' not found in animations.json", gesture_name)
@@ -141,8 +196,10 @@ Decompose this into a chronological JSON execution plan:
   "task_title": "Short 2-4 word title",
   "motion_steps": [
     {{
-      "desc": "Short description (e.g. 'Walking forward' or 'Turning 90 degrees left')",
-      "type": "walk_forward | walk_backward | rotate_left | rotate_right",
+      "desc": "Short description (e.g. 'Counting to 10', 'Walking forward 2 steps', 'Turning 90 degrees left')",
+      "type": "walk_forward | walk_backward | rotate_left | rotate_right | speak | pause | gesture",
+      "text": "Spoken text if type is speak/count (e.g. 'Counting to 10: 1, 2, 3... 10!')",
+      "gesture": "Name of animation if type is gesture (from {valid_gestures})",
       "vx": 45,
       "omega": 0,
       "duration_s": 2.5
@@ -155,7 +212,9 @@ RULES FOR MOTION:
 - 'turn left' or 'turn 90 degrees left': type='rotate_left', vx=0, omega=-40, duration_s=2.25
 - 'turn right' or 'turn 90 degrees right': type='rotate_right', vx=0, omega=40, duration_s=2.25
 - 'walk forward': type='walk_forward', vx=45, omega=0, duration_s=2.5
+- 'count to N' or verbal action: type='speak', text='1, 2, 3... N!'
 """
+        plan = None
         client = self.llm._ensure()
         try:
             resp = client.chat.completions.create(
@@ -172,34 +231,50 @@ RULES FOR MOTION:
             self.fast_visual_qa(user_goal)
             return
 
-        motion_steps = plan.get("motion_steps", [])
-        
-        # Fallback if motion parsing was empty
+        # Safely extract plan structure regardless of dict or list return
+        motion_steps = []
+        visual_query = user_goal
+        if isinstance(plan, dict):
+            task_title = plan.get("task_title") or plan.get("title") or task_title
+            visual_query = plan.get("visual_inspection_query") or plan.get("query") or user_goal
+            raw_steps = plan.get("motion_steps") or plan.get("steps") or plan.get("timeline") or []
+            if isinstance(raw_steps, list):
+                motion_steps = raw_steps
+        elif isinstance(plan, list):
+            for item in plan:
+                if isinstance(item, dict):
+                    motion_steps.append(item)
+                elif isinstance(item, str):
+                    motion_steps.append({"desc": item.replace("_", " ").title(), "type": item})
+
+        # Fallback keyword extraction if motion parsing returned empty
         if not motion_steps:
             norm_lower = user_goal.lower()
-            if "walk" in norm_lower:
+            if "count" in norm_lower:
+                motion_steps.append({"desc": "Counting to 10", "type": "speak", "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10!"})
+            if "walk" in norm_lower or "step" in norm_lower:
                 motion_steps.append({"desc": "Walking forward", "type": "walk_forward", "vx": 45, "omega": 0, "duration_s": 2.5})
             if "left" in norm_lower:
                 motion_steps.append({"desc": "Turning 90° left", "type": "rotate_left", "vx": 0, "omega": -40, "duration_s": 2.25})
-            elif "right" in norm_lower or "turn" in norm_lower:
+            elif "right" in norm_lower or "turn" in norm_lower or "rotate" in norm_lower:
                 motion_steps.append({"desc": "Turning 90° right", "type": "rotate_right", "vx": 0, "omega": 40, "duration_s": 2.25})
 
         ui_steps = []
         for idx, s in enumerate(motion_steps):
-            ui_steps.append({"index": idx, "label": s.get("desc", f"Step {idx+1}"), "type": "motion"})
+            ui_steps.append({"index": idx, "label": s.get("desc", f"Step {idx+1}"), "type": s.get("type", "motion")})
         ui_steps.append({"index": len(ui_steps), "label": "Inspect Camera & Evaluate Conditions", "type": "vision"})
         ui_steps.append({"index": len(ui_steps), "label": "Execute Resulting Action", "type": "action"})
 
         if self.event:
             self.event({
                 "stage": "plan",
-                "title": f"Task: {plan.get('task_title', task_title)}",
+                "title": f"Task: {task_title}",
                 "thought": f"Executing physical procedure: '{user_goal}'",
                 "steps": ui_steps,
                 "active_step": 0,
             })
 
-        # 2. Execute Physical Motion Steps Chronologically
+        # 2. Execute Physical Steps Chronologically
         for step_idx, step in enumerate(motion_steps):
             if self.abort_event.is_set():
                 return
@@ -212,28 +287,49 @@ RULES FOR MOTION:
                     "steps": ui_steps,
                 })
 
-            stype = step.get("type", "walk_forward")
+            stype = str(step.get("type", "walk_forward")).lower()
             dur = float(step.get("duration_s", 2.0))
-            
-            # Smart defaults based on action type
-            if "left" in stype:
-                vx = float(step.get("vx", 0.0))
-                omega = float(step.get("omega", -40.0))
-            elif "right" in stype:
-                vx = float(step.get("vx", 0.0))
-                omega = float(step.get("omega", 40.0))
-            elif "backward" in stype:
-                vx = float(step.get("vx", -45.0))
-                omega = float(step.get("omega", 0.0))
-            else:
-                vx = float(step.get("vx", 45.0))
-                omega = float(step.get("omega", 0.0))
+            hip = float(step.get("hip_stance", step.get("hip_swing", 20)))
+            sh = float(step.get("step_height", 35))
+            ct = float(step.get("cycle_time", 0.8))
+            gt = str(step.get("gait", "tripod"))
+            pz = float(step.get("pos_z", 0))
+            vy = float(step.get("vy", 0.0))
 
-            if not self._move(vx=vx, omega=omega, duration_s=dur):
-                return
+            if stype in ("speak", "say", "count"):
+                speak_text = step.get("text") or step.get("desc") or ""
+                if speak_text:
+                    self.reply(speak_text)
+                    tts_dur = self.speak(speak_text) or 0.0
+                    self._sleep_interruptible(max(0.5, tts_dur + 0.3))
+            elif stype in ("pause", "wait"):
+                self._sleep_interruptible(dur)
+            elif stype == "gesture" or stype in self.animations or normalize_animation_name(stype) in self.animations:
+                gname = step.get("gesture") or stype
+                self._execute_gesture(gname)
+            else:
+                if "left" in stype:
+                    vx = float(step.get("vx", 0.0))
+                    omega = float(step.get("omega", -40.0))
+                elif "right" in stype:
+                    vx = float(step.get("vx", 0.0))
+                    omega = float(step.get("omega", 40.0))
+                elif "backward" in stype or "back" in stype:
+                    vx = float(step.get("vx", -45.0))
+                    omega = float(step.get("omega", 0.0))
+                else:
+                    vx = float(step.get("vx", 45.0))
+                    omega = float(step.get("omega", 0.0))
+
+                if not self._move(
+                    vx=vx, omega=omega, duration_s=dur,
+                    vy=vy, gait=gt, step_height=sh,
+                    cycle_time=ct, hip_stance=hip, pos_z=pz
+                ):
+                    return
 
         # 3. Arrived at Destination -> Capture Fresh Camera Snapshot
-        time.sleep(0.4)  # Allow physical body and camera to settle
+        time.sleep(0.4)
         img_b64 = self.fetch_snapshot()
         if not img_b64:
             self.reply("I reached the destination, but the camera buffer is offline.")
@@ -249,7 +345,7 @@ RULES FOR MOTION:
                 "steps": ui_steps,
             })
 
-        query = plan.get("visual_inspection_query", user_goal)
+        query = visual_query
 
         # 4. Universal Dynamic Decision & Branching via VLM
         branch_prompt = f"""You are the visual cortex and decision engine of an agile 6-legged robot.
@@ -272,9 +368,14 @@ Respond strictly in JSON:
         eval_raw = self.llm.inspect_vision(prompt=branch_prompt, image_b64=img_b64)
         branch_res = safe_extract_json(eval_raw)
 
-        obs = branch_res.get("observation", eval_raw)
-        chosen_gesture = str(branch_res.get("chosen_gesture", "none")).strip().lower()
-        speech = str(branch_res.get("speech", f"From my new spot, I see: {obs}")).strip()
+        if isinstance(branch_res, dict):
+            obs = branch_res.get("observation", eval_raw)
+            chosen_gesture = str(branch_res.get("chosen_gesture", "none")).strip().lower()
+            speech = str(branch_res.get("speech", f"From my new spot, I see: {obs}")).strip()
+        else:
+            obs = str(eval_raw)
+            chosen_gesture = "none"
+            speech = obs
 
         # 5. Execute Chosen Branch & Speak
         branch_step_idx = len(motion_steps) + 1

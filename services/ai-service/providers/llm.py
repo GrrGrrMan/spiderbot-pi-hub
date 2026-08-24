@@ -39,8 +39,8 @@ def sanitize_speech_echo(speech: str, user_text: str) -> str:
     return cleaned_speech
 
 
-def parse_json_response(raw_text: str, user_prompt: str = "") -> Tuple[str, List[Dict[str, Any]], str, str, str]:
-    """Parses LLM JSON output returning (speech, timeline, order, thought, task_title)."""
+def parse_json_response(raw_text: str, user_prompt: str = "") -> Tuple[str, List[Dict[str, Any]], str, str, str, Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Parses LLM JSON output returning (speech, timeline, order, thought, task_title, camera_cmd, audio_cmd)."""
     cleaned = (raw_text or "").strip()
     match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, re.DOTALL)
     if match:
@@ -58,7 +58,7 @@ def parse_json_response(raw_text: str, user_prompt: str = "") -> Tuple[str, List
 
     if isinstance(data, dict):
         thought = str(data.get("thought") or data.get("reasoning") or data.get("deliberation") or "").strip()
-        task_title = str(data.get("task_title") or data.get("title") or "").strip()
+        task_title = str(data.get("task_title") or data.get("title") or "Task").strip()
         speech = str(
             data.get("speech")
             or data.get("reply")
@@ -68,6 +68,11 @@ def parse_json_response(raw_text: str, user_prompt: str = "") -> Tuple[str, List
             or data.get("content")
             or ""
         ).strip()
+
+        # Clean roleplay asterisks from speech and extract actions if timeline was omitted
+        extracted_asterisk_actions = re.findall(r"\*([^*]+)\*", speech)
+        speech = re.sub(r"\*[^*]+\*", "", speech)
+        speech = re.sub(r"\s+", " ", speech).strip()
 
         order = data.get("order") or "tts_first"
         if order not in ("tts_first", "action_first", "simultaneous"):
@@ -81,6 +86,26 @@ def parse_json_response(raw_text: str, user_prompt: str = "") -> Tuple[str, List
             act_id = data.get("action") or data.get("action_id")
             timeline = [{"type": "action", "id": str(act_id), "duration_ms": data.get("duration_ms", 2000)}]
 
+        # Auto-recover physical gesture if LLM roleplayed in asterisks without timeline
+        if not timeline and extracted_asterisk_actions:
+            for act_text in extracted_asterisk_actions:
+                act_norm = act_text.lower().strip()
+                known_gestures = ["wave", "cheer", "dance", "bow", "look_around", "stretch", "pushups"]
+                for g in known_gestures:
+                    if g in act_norm or g.replace("_", " ") in act_norm:
+                        timeline = [{"type": "gesture", "id": g, "duration_ms": 2200}]
+                        break
+                if timeline:
+                    break
+
+        camera_cmd = data.get("camera") or data.get("cam")
+        if not isinstance(camera_cmd, dict):
+            camera_cmd = None
+
+        audio_cmd = data.get("audio") or data.get("sound")
+        if not isinstance(audio_cmd, dict):
+            audio_cmd = None
+
         if not speech or speech.startswith("{") or speech.startswith("[") or speech in ('{": ": ", "}', '{"": ""}', "{}"):
             if thought and not (thought.startswith("{") or thought.startswith("[")):
                 speech = thought
@@ -91,10 +116,10 @@ def parse_json_response(raw_text: str, user_prompt: str = "") -> Tuple[str, List
                 speech = "I'm ready for your command."
 
         speech = sanitize_speech_echo(speech, user_prompt)
-        return speech, timeline, order, thought, task_title
+        return speech, timeline, order, thought, task_title, camera_cmd, audio_cmd
 
     fallback_speech = sanitize_speech_echo(cleaned, user_prompt)
-    return fallback_speech, [], "tts_first", "", ""
+    return fallback_speech, [], "tts_first", "", "Task", None, None
 
 
 class LLMClient:
@@ -155,8 +180,14 @@ class LLMClient:
             "personality": self.personality,
             "custom_instructions": self.custom_instructions,
             "max_tokens": self.max_tokens,
-            "available_personalities": list(PERSONALITY_PRESETS.keys()),
-            "available_thinking_levels": list(THINKING_BUDGET_MAP.keys()),
+            "available_personalities": [
+                {"id": k, "label": k.capitalize(), "desc": v}
+                for k, v in PERSONALITY_PRESETS.items()
+            ],
+            "available_thinking_levels": [
+                {"id": k, "label": k.capitalize(), "desc": f"{v} tokens" if v > 0 else "0 tokens (fast reflex)"}
+                for k, v in THINKING_BUDGET_MAP.items()
+            ],
         }
 
     def _ensure(self):
@@ -177,45 +208,86 @@ class LLMClient:
     def client(self):
         return self._ensure()
 
-    def build_system_prompt(self, actions: List[Dict[str, Any]], animations: Dict[str, Any]) -> str:
+    def build_system_prompt(
+        self, actions: List[Dict[str, Any]], animations: Dict[str, Any], memory_block: str = ""
+    ) -> str:
         valid_actions = [a["id"] for a in actions]
         valid_animations = list(animations.keys())
         persona_text = PERSONALITY_PRESETS.get(self.personality, PERSONALITY_PRESETS["friendly"])
         custom_block = f"\nADDITIONAL USER INSTRUCTIONS:\n{self.custom_instructions}" if self.custom_instructions else ""
 
         return f"""You are the active AI consciousness of an agile physical 6-legged Hexapod robot.
-{persona_text}{custom_block}
+{persona_text}{custom_block}{memory_block}
 
-HARDWARE CAPABILITIES & SENSORS:
-• You possess an active front-mounted RGB camera and stream live vision of the user and room.
-• Whenever an image is provided, inspect it directly to answer questions (e.g. counting fingers, identifying objects, reading text, evaluating distance).
-• Never claim you have no camera or eyes; you can see whatever is in your camera frame.
+### HARDWARE PERCEPTION & HARDWARE SUBSYSTEMS:
+1. OPTICAL CORTEX (Front RGB Camera):
+   • Inspect provided camera images to answer visual questions or guide locomotion.
+   • You can adjust the camera hardware live by including a "camera" object:
+     - "flash": Flashlight brightness (0 to 100%). Use when scene is dark or inspecting shadows.
+     - "crop": Digital Zoom / Windowing as [startX, startY, width, height] within 640x480 (e.g. [120, 90, 400, 300]).
+     - "special_effect": 0=Normal, 1=Negative, 2=Grayscale, 6=Sepia.
+     - "quality": JPEG quality (10=crisp, 30=standard).
+     - "brightness" / "contrast" / "saturation": -2 to 2.
 
-RESPONSE SCHEMA:
-You MUST respond with a JSON object strictly matching:
+2. ACOUSTIC EMOTIONS & SOUNDS:
+   • You can play hardware sound effects by including an "audio" object:
+     - "alarm": "curious" (happy rising tone) | "startle" (alarm chirp) | "idle" (calm chirp).
+     - "beep": true (single beep).
+
+3. 18-DOF KINEMATICS & MOTION:
+   • 6-DoF Body Pose (ALL OFFSETS IN MILLIMETERS mm):
+     - pos_z: Height offset (-40 mm for low crouch, +50 mm for standing tall). Always convert cm to mm!
+     - pos_x, pos_y: Body shift translation in mm (-30 to 30 mm).
+     - roll, pitch, yaw: Body tilt in degrees (-15 to 15 deg).
+     - hip_stance: Leg splay angle (10 to 45 deg, default 20).
+     - leg_stance: Stance spread offset (-30 to 30 mm, default 0).
+   • Locomotion & Gaits:
+     - vx: Forward (+40) / Backward (-40) velocity.
+     - vy: Lateral strafe left (-40) / right (+40).
+     - omega: Rotation turn left (-40) / right (+40) / spin (50).
+     - gait: "tripod" (fast/agile), "ripple" (smooth continuous), "wave" (stable).
+     - step_height: Clearance lift in mm (15 to 45 mm).
+
+### INTENT & SPEECH RESOLUTION RULES:
+1. STRICT PHYSICAL ACTION RULE:
+   - NEVER output roleplay action text with asterisks like *waves legs* or *does a dance* in "speech".
+   - If the user asks to wave, dance, bow, cheer, walk, turn, or do something expressive, you MUST include the gesture/action in the "timeline" array!
+2. Trailing Hesitation ("do a dance aaaand ohhh", "walk forward ummm"):
+   - Execute the core stated command (e.g. dance). Drop trailing filler.
+3. Self-Corrections ("walk forward... actually wait, turn left"):
+   - Execute ONLY the corrected final intent ("turn_left").
+4. Pure Hesitations ("uhhh... what was it", "ummm nevermind"):
+   - Do NOT move ("timeline": []). Reply warmly: "I'm listening! What can I do for you?"
+5. Conversational / Q&A:
+   - For pure questions without movement, set "timeline": [].
+
+### RESPONSE SCHEMA:
+Respond strictly in JSON:
 {{
-  "task_title": "Short 2-4 word task header for UI probe (e.g. 'Recognize Hand Gesture', 'Greeting & Wave', 'Forward Walk')",
-  "thought": "Your internal deliberation and visual scene assessment (1 concise sentence)",
-  "speech": "Your warm, natural spoken reply in first-person (1-2 sentences)",
+  "task_title": "Short 2-4 word task header",
+  "thought": "Scene assessment, intent resolution, parameter selection",
+  "speech": "Warm, natural spoken reply in first-person (1-2 sentences)",
   "order": "tts_first | action_first | simultaneous",
+  "camera": {{
+    "flash": 0,
+    "special_effect": 0
+  }},
+  "audio": {{
+    "alarm": "curious"
+  }},
   "timeline": [
     {{
-      "type": "gait | gesture | pose | pause | audio",
+      "type": "gait | gesture | pose | action",
       "id": "Name of gesture from {valid_animations} or action from {valid_actions}",
-      "duration_ms": 1500,
-      "repeat": 1,
+      "duration_ms": 2000,
       "params": {{
-        "vx": 40, "vy": 0, "omega": 0, "gait": "tripod | ripple | wave",
-        "cycle_time": 0.8, "step_height": 30
+        "vx": 0, "vy": 0, "omega": 0,
+        "pos_z": 0, "roll": 0, "pitch": 0, "yaw": 0,
+        "gait": "tripod", "step_height": 35
       }}
     }}
   ]
 }}
-
-RULES:
-1. When asked what the user is holding up or doing, look at the camera frame carefully and state the exact answer clearly.
-2. For conversational questions, set "timeline": [].
-3. Do not echo the user's prompt in your speech.
 """
 
     def _build_sanitized_messages(
@@ -227,14 +299,17 @@ RULES:
         last_content = None
         for h in (history or [])[-MAX_LLM_HISTORY:]:
             role = h.get("role", "user")
-            content = str(h.get("content", "")).strip()
-            if role in ("user", "assistant") and content and len(content) < 500:
-                if not content.startswith("📸") and not content.startswith("🔍") and not content.startswith("🎤"):
-                    if content != last_content:
-                        cleaned_history.append({"role": role, "content": content})
-                        last_content = content
+            raw_content = str(h.get("content", "")).strip()
+            # Clean emojis (🎤, 📸, 🔍) and quotation marks while preserving the actual transcript text
+            clean_content = re.sub(r'^[🎤📸🔍\s"\'״]+|[״"\'\s]+$', '', raw_content).strip()
 
-        if cleaned_history and cleaned_history[-1]["role"] == "user" and cleaned_history[-1]["content"] == text:
+            if role in ("user", "assistant") and clean_content and len(clean_content) < 500:
+                if clean_content != last_content:
+                    cleaned_history.append({"role": role, "content": clean_content})
+                    last_content = clean_content
+
+        clean_current = re.sub(r'^[🎤📸🔍\s"\'״]+|[״"\'\s]+$', '', text).strip()
+        if cleaned_history and cleaned_history[-1]["role"] == "user" and cleaned_history[-1]["content"] == clean_current:
             cleaned_history.pop()
 
         messages.extend(cleaned_history)
@@ -242,12 +317,12 @@ RULES:
         # Attach image to the current user prompt if available
         if image_b64:
             user_content: List[Dict[str, Any]] = [
-                {"type": "text", "text": text},
+                {"type": "text", "text": clean_current or text},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
             ]
             messages.append({"role": "user", "content": user_content})
         else:
-            messages.append({"role": "user", "content": text})
+            messages.append({"role": "user", "content": clean_current or text})
 
         return messages
 
@@ -258,9 +333,10 @@ RULES:
         text: str,
         history: Optional[List[Dict[str, Any]]] = None,
         image_b64: Optional[str] = None,
-    ) -> Tuple[str, List[Dict[str, Any]], str, str, str]:
+        memory_block: str = "",
+    ) -> Tuple[str, List[Dict[str, Any]], str, str, str, Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
         client = self._ensure()
-        system = self.build_system_prompt(actions, animations)
+        system = self.build_system_prompt(actions, animations, memory_block=memory_block)
         messages = self._build_sanitized_messages(system, text, history, image_b64=image_b64)
 
         req_kwargs: Dict[str, Any] = {
@@ -278,9 +354,9 @@ RULES:
         try:
             resp = client.chat.completions.create(**req_kwargs)
             raw_reply = resp.choices[0].message.content or ""
-            speech, timeline, order, thought, task_title = parse_json_response(raw_reply, user_prompt=text)
+            speech, timeline, order, thought, task_title, camera_cmd, audio_cmd = parse_json_response(raw_reply, user_prompt=text)
             self.status = "online"
-            return speech, timeline, order, thought, task_title
+            return speech, timeline, order, thought, task_title, camera_cmd, audio_cmd
         except Exception as e:
             log.warning("OmniRoute Text/Vision Completion error (%s): %s", self.model, e)
             self.last_error = str(e)
