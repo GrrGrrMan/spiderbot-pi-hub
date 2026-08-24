@@ -409,6 +409,8 @@ class LLMClient:
    - Do NOT move ("timeline": []). Reply warmly: "I'm listening! What can I do for you?"
 5. Conversational / Q&A:
    - For pure questions without movement, set "timeline": [].
+6. Custom Poses & Locomotion:
+   - For custom body poses (pos_z, roll, pitch, etc.) or walking (vx, vy), set "type": "pose" or "gait" and leave "id" empty (""). Do not guess an id.
 
 ### RESPONSE SCHEMA:
 Respond strictly in JSON:
@@ -427,7 +429,7 @@ Respond strictly in JSON:
   "timeline": [
     {{
       "type": "gait | gesture | pose | action",
-      "id": "Name of gesture from {valid_animations} or action from {valid_actions}",
+      "id": "Name of gesture from {valid_animations} or action from {valid_actions} (Leave empty for pose/gait)",
       "duration_ms": 2000,
       "params": {{
         "vx": 0, "vy": 0, "omega": 0,

@@ -294,25 +294,6 @@ RULES:
             roll = float(p.get("roll", step_obj.get("roll", 0.0)))
             pos_z = float(p.get("pos_z", step_obj.get("pos_z", 0.0)))
 
-            pose_parts = []
-            if yaw != 0:
-                dir_yaw = "Left" if yaw < 0 else "Right"
-                pose_parts.append(f"Twist {dir_yaw} {abs(int(yaw))}°")
-            if pitch != 0:
-                dir_pitch = "Back" if pitch < 0 or "back" in raw_id or "tilt" in raw_id or "lean" in raw_id else "Forward"
-                pose_parts.append(f"Lean {dir_pitch} {abs(int(pitch))}°")
-            if roll != 0:
-                pose_parts.append(f"Tilt Roll {int(roll)}°")
-            if pos_z != 0:
-                pose_parts.append(f"Height ({int(pos_z)}mm)")
-
-            if pose_parts:
-                return " & ".join(pose_parts)
-            if roll != 0:
-                return f"Tilt Roll {int(roll)}°"
-            if pos_z != 0:
-                return f"Height Offset ({int(pos_z)}mm)"
-
             known_gestures = {
                 "wave": "Wave Hello",
                 "cheer": "Cheer Yay",
@@ -328,14 +309,37 @@ RULES:
 
             vx = float(p.get("vx", step_obj.get("vx", 0.0)))
             omega = float(p.get("omega", step_obj.get("omega", 0.0)))
-            if omega > 0 or "turn_right" in raw_id or "rotate" in raw_id or "spin" in raw_id:
-                return f"Rotate Right{dur_tag}"
-            if omega < 0 or "turn_left" in raw_id:
-                return f"Rotate Left{dur_tag}"
+            
+            loco_parts = []
             if vx > 0 or "forward" in raw_id or "walk" in raw_id:
-                return f"Walk Forward{dur_tag}"
-            if vx < 0 or "backward" in raw_id:
-                return f"Walk Backward{dur_tag}"
+                loco_parts.append("Walk Forward")
+            elif vx < 0 or "backward" in raw_id:
+                loco_parts.append("Walk Backward")
+            if omega > 0 or "turn_right" in raw_id or "rotate" in raw_id or "spin" in raw_id:
+                loco_parts.append("Rotate Right")
+            elif omega < 0 or "turn_left" in raw_id:
+                loco_parts.append("Rotate Left")
+                
+            if loco_parts:
+                base = " & ".join(loco_parts) + dur_tag
+                if pos_z != 0:
+                    return f"{base} (Z: {int(pos_z)}mm)"
+                return base
+
+            pose_parts = []
+            if yaw != 0:
+                dir_yaw = "Left" if yaw < 0 else "Right"
+                pose_parts.append(f"Twist {dir_yaw} {abs(int(yaw))}°")
+            if pitch != 0:
+                dir_pitch = "Back" if pitch < 0 or "back" in raw_id or "tilt" in raw_id or "lean" in raw_id else "Forward"
+                pose_parts.append(f"Lean {dir_pitch} {abs(int(pitch))}°")
+            if roll != 0:
+                pose_parts.append(f"Tilt Roll {int(roll)}°")
+            if pos_z != 0:
+                pose_parts.append(f"Height ({int(pos_z)}mm)")
+
+            if pose_parts:
+                return " & ".join(pose_parts) + dur_tag
 
             track = str(p.get("track") or step_obj.get("audio_track") or step_obj.get("track") or "")
             if track:

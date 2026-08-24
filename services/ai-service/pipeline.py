@@ -241,9 +241,11 @@ class Pipeline:
                         time.sleep(total_ms / 1000.0)
                         continue
 
-                # Action Preset Fallback
+                # Action Preset Fallback (Bypass if the LLM provided custom kinematics)
+                has_kinematics = stype in ("pose", "gait") or any(k in params for k in ("pos_z", "pos_x", "pos_y", "roll", "pitch", "yaw", "vx", "vy", "omega"))
                 act = action_by_id(self.actions, act_id)
-                if act and act.get("topic") in ("audio", "cmd") and act.get("payload", {}).get("type") != "motion":
+                
+                if not has_kinematics and act and act.get("topic") in ("audio", "cmd") and act.get("payload", {}).get("type") != "motion":
                     on_cmd(act["payload"])
                     if on_action_directive:
                         on_action_directive(act["payload"])
