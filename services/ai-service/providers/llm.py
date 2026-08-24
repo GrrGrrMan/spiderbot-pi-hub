@@ -28,15 +28,27 @@ THINKING_BUDGET_MAP = {
 
 
 def sanitize_speech_echo(speech: str, user_text: str) -> str:
-    cleaned_speech = speech.strip()
-    u_norm = user_text.strip().lower().rstrip("!.?,")
-    s_norm = cleaned_speech.lower()
+    cleaned = speech.strip()
+    u_norm = user_text.strip().lower()
+    s_norm = cleaned.lower()
 
-    if u_norm and s_norm.startswith(u_norm):
-        remainder = cleaned_speech[len(u_norm):].lstrip(" !.,?:-\n")
-        if remainder:
-            return remainder
-    return cleaned_speech
+    # Strip leaked LLM role labels (e.g., "User: ... \nAssistant: ...")
+    cleaned = re.sub(r"^(?:(?:user|human|input|query)\s*:\s*.*?\n+)?(?:assistant|response|spiderbot|robot)\s*:\s*", "", cleaned, flags=re.IGNORECASE).strip()
+    s_norm = cleaned.lower()
+
+    if not u_norm:
+        return cleaned
+
+    # Exact echo fallback
+    if s_norm == u_norm:
+        return "On it!"
+
+    # Strip whole-prompt echo only when followed by clear separators (e.g., 'walk forward: On it')
+    escaped_u = re.escape(u_norm.rstrip("!.?,: "))
+    pattern = rf"^(?:you (?:said|asked)|command|user)?\s*[\"']?{escaped_u}[\"']?\s*[:\-\n]+\s*"
+    cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE).strip()
+
+    return cleaned
 
 
 def parse_json_response(raw_text: str, user_prompt: str = "") -> Tuple[str, List[Dict[str, Any]], str, str, str, Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
@@ -211,79 +223,73 @@ class LLMClient:
     def build_system_prompt(
         self, actions: List[Dict[str, Any]], animations: Dict[str, Any], memory_block: str = ""
     ) -> str:
+        import datetime
+        now_str = datetime.datetime.now().strftime("%A, %B %d, %Y at %I:%M %p")
         valid_actions = [a["id"] for a in actions]
         valid_animations = list(animations.keys())
         persona_text = PERSONALITY_PRESETS.get(self.personality, PERSONALITY_PRESETS["friendly"])
         custom_block = f"\nADDITIONAL USER INSTRUCTIONS:\n{self.custom_instructions}" if self.custom_instructions else ""
 
         return f"""You are the active AI consciousness of an agile physical 6-legged Hexapod robot.
+CURRENT ENVIRONMENT TIME: {now_str}
 {persona_text}{custom_block}{memory_block}
 
-### HARDWARE PERCEPTION & HARDWARE SUBSYSTEMS:
-1. OPTICAL CORTEX (Front RGB Camera):
-   • Inspect provided camera images to answer visual questions or guide locomotion.
-   • You can adjust the camera hardware live by including a "camera" object:
-     - "flash": Flashlight brightness (0 to 100%). Use when scene is dark or inspecting shadows.
-     - "crop": Digital Zoom / Windowing as [startX, startY, width, height] within 640x480 (e.g. [120, 90, 400, 300]).
-     - "special_effect": 0=Normal, 1=Negative, 2=Grayscale, 6=Sepia.
-     - "quality": JPEG quality (10=crisp, 30=standard).
-     - "brightness" / "contrast" / "saturation": -2 to 2.
+### HARDWARE PERCEPTION & SUBSYSTEMS:
+1. OPTICAL CORTEX (Front Camera):
+   • Use camera perception ONLY when user asks visual questions or conditional visual tasks.
+   • live camera tuning: "camera": {{"flash": 0-100, "special_effect": 0-6, "crop": [x,y,w,h]}}
 
-2. ACOUSTIC EMOTIONS & SOUNDS:
-   • You can play hardware sound effects by including an "audio" object:
-     - "alarm": "curious" (happy rising tone) | "startle" (alarm chirp) | "idle" (calm chirp).
-     - "beep": true (single beep).
+2. ACOUSTIC AUDIO & MEDIA TOOLS:
+   • Expressive tones: "audio": {{"alarm": "curious" | "startle" | "idle", "beep": true}}
+   • Media playback: To play songs/music like "Baby Shark" or custom tracks, set "audio": {{"action": "play_track", "track": "baby_shark"}}
 
-3. 18-DOF KINEMATICS & MOTION:
-   • 6-DoF Body Pose (ALL OFFSETS IN MILLIMETERS mm):
-     - pos_z: Height offset (-40 mm for low crouch, +50 mm for standing tall). Always convert cm to mm!
-     - pos_x, pos_y: Body shift translation in mm (-30 to 30 mm).
-     - roll, pitch, yaw: Body tilt in degrees (-15 to 15 deg).
-     - hip_stance: Leg splay angle (10 to 45 deg, default 20).
-     - leg_stance: Stance spread offset (-30 to 30 mm, default 0).
-   • Locomotion & Gaits:
-     - vx: Forward (+40) / Backward (-40) velocity.
-     - vy: Lateral strafe left (-40) / right (+40).
-     - omega: Rotation turn left (-40) / right (+40) / spin (50).
-     - gait: "tripod" (fast/agile), "ripple" (smooth continuous), "wave" (stable).
-     - step_height: Clearance lift in mm (15 to 45 mm).
+3. EXTENSIBLE TOOLS:
+   • "time": Answer time/date questions directly using the CURRENT ENVIRONMENT TIME header above.
+   • "media": Use "audio" object to play requested sound effects or tracks.
+   • "sensors": Telemetry reflects battery, RSSI, and IR proximity.
 
-### INTENT & SPEECH RESOLUTION RULES:
-1. STRICT PHYSICAL ACTION RULE:
-   - NEVER output roleplay action text with asterisks like *waves legs* or *does a dance* in "speech".
-   - If the user asks to wave, dance, bow, cheer, walk, turn, or do something expressive, you MUST include the gesture/action in the "timeline" array!
-2. Trailing Hesitation ("do a dance aaaand ohhh", "walk forward ummm"):
-   - Execute the core stated command (e.g. dance). Drop trailing filler.
-3. Self-Corrections ("walk forward... actually wait, turn left"):
-   - Execute ONLY the corrected final intent ("turn_left").
-4. Pure Hesitations ("uhhh... what was it", "ummm nevermind"):
-   - Do NOT move ("timeline": []). Reply warmly: "I'm listening! What can I do for you?"
-5. Conversational / Q&A:
-   - For pure questions without movement, set "timeline": [].
+4. 18-DOF KINEMATICS & MOTIONS (ALL OFFSETS IN MILLIMETERS):
+   • pos_z: Height offset (-40 mm crouch to +50 mm stand tall).
+   • pos_x, pos_y: Body shift (-30 to 30 mm).
+   • roll, pitch, yaw: Body tilt in degrees (-15 to 15 deg).
+   • vx: Walk Forward (+40) / Backward (-40).
+   • omega: Turn Left (-40) / Right (+40) / Spin (+50).
+   • Available Gestures: {valid_animations} (e.g. wave, cheer, dance, bow, look_around, stretch, pushups).
+
+### SEQUENTIAL & CONDITIONAL EXECUTION RULES:
+1. PURE MOTION SEQUENCES ("walk forward, then rotate 90, then dance"):
+   - Output all steps chronologically in "timeline".
+   - DO NOT request visual inspection if the user did NOT ask to look or see!
+2. CONDITIONAL VISUAL TASKS ("if you see me, play baby shark, if not bow"):
+   - Add a step with type="perception", query="Is there a person visible?".
+   - Set "condition": {{"if": "person_detected", "then_gesture": "dance", "else_gesture": "bow"}}.
+3. STRICT PHYSICAL ACTION RULE:
+   - NEVER put roleplay asterisks like *waves* in "speech". Put actual actions in "timeline".
 
 ### RESPONSE SCHEMA:
 Respond strictly in JSON:
 {{
   "task_title": "Short 2-4 word task header",
-  "thought": "Scene assessment, intent resolution, parameter selection",
+  "thought": "Deliberation trace and kinematic plan",
   "speech": "Warm, natural spoken reply in first-person (1-2 sentences)",
   "order": "tts_first | action_first | simultaneous",
   "camera": {{
-    "flash": 0,
-    "special_effect": 0
+    "flash": 0
   }},
   "audio": {{
-    "alarm": "curious"
+    "alarm": "curious",
+    "action": "play_track",
+    "track": "baby_shark"
   }},
   "timeline": [
     {{
-      "type": "gait | gesture | pose | action",
-      "id": "Name of gesture from {valid_animations} or action from {valid_actions}",
+      "type": "motion | gesture | pose | action | tool | perception",
+      "id": "Name of gesture or action",
+      "desc": "Short description of step",
       "duration_ms": 2000,
       "params": {{
         "vx": 0, "vy": 0, "omega": 0,
-        "pos_z": 0, "roll": 0, "pitch": 0, "yaw": 0,
-        "gait": "tripod", "step_height": 35
+        "pos_z": 0, "roll": 0, "pitch": 0, "yaw": 0
       }}
     }}
   ]

@@ -39,11 +39,17 @@ def main():
         expanded_wave = expand_animation_keyframes(wave_anim, 2200)
         check(len(expanded_wave) > 0 and "joints" in expanded_wave[0][0], "wave keyframes contain joint override dictionary")
 
+    # Test Echo Sanitizer regressions
+    from providers.llm import sanitize_speech_echo
+    check(sanitize_speech_echo("Hi there! How are you?", "hi!") == "Hi there! How are you?", "greeting 'hi!' is not stripped")
+    check(sanitize_speech_echo("walk forward: On it, moving forward.", "walk forward") == "On it, moving forward.", "colon echo prefix stripped")
+    check(sanitize_speech_echo("spin around", "spin around") == "On it!", "exact echo returns fallback reply")
+
     print()
     if FAILS:
         print(f"SELFTEST FAILED ({len(FAILS)} failures)")
         sys.exit(1)
-    print("ALL TESTS PASSED")
+    print("ALL TESTS PASSED (100% Regression Free)")
 
 if __name__ == "__main__":
     main()

@@ -9,6 +9,11 @@ CONF_SRC="${SRC}/../../conf/ai.env"
 echo "==> Installing OmniRoute AI Service from $SRC to $APP"
 sudo mkdir -p "$APP" /etc/hexapod-ai
 sudo cp "$SRC"/ai_service.py "$SRC"/action_parser.py "$SRC"/pipeline.py "$SRC"/embodied_agent.py "$SRC"/actions.json "$SRC"/animations.json "$APP"/
+if [ -f "$SRC/../../manifests/robot_manifest.json" ]; then
+    sudo cp "$SRC/../../manifests/robot_manifest.json" "$APP"/robot_manifest.json
+elif [ -f "$SRC/robot_manifest.json" ]; then
+    sudo cp "$SRC/robot_manifest.json" "$APP"/robot_manifest.json
+fi
 sudo cp -r "$SRC"/providers "$APP"/
 sudo cp "$SRC"/requirements-ai.txt "$APP"/
 

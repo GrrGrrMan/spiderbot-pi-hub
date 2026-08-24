@@ -178,15 +178,16 @@ class EmbodiedAgent:
         else:
             log.warning("Requested gesture '%s' not found in animations.json", gesture_name)
 
-    def run_procedural_task(self, user_goal: str):
-        """Compiles compound instructions into an execution graph and executes it physically."""
+    def run_procedural_task(self, user_goal: str, initial_plan: Optional[Dict[str, Any]] = None):
+        """Executes multi-step compound tasks without forced camera dependencies."""
         self.abort_event.clear()
         task_title = extract_clean_objective(user_goal)
-        log.info("[DYNAMIC PROCEDURAL TASK]: %s", user_goal)
+        log.info("[DYNAMIC TASK GRAPH]: %s", user_goal)
 
         valid_gestures = list(self.animations.keys())
+        has_visual_intent = any(k in user_goal.lower() for k in ("see", "look", "inspect", "camera", "if you see", "if you can see", "find", "detect"))
 
-        # 1. Compile User Command into Execution Plan
+        # 1. Compile User Command into Execution Plan if not pre-compiled
         plan_prompt = f"""You are the kinematic task compiler for an agile 6-legged physical Hexapod robot.
 The user's compound command is: "{user_goal}".
 Available physical animations: {valid_gestures}.
@@ -194,88 +195,82 @@ Available physical animations: {valid_gestures}.
 Decompose this into a chronological JSON execution plan:
 {{
   "task_title": "Short 2-4 word title",
-  "motion_steps": [
+  "has_visual_inspection": { "true" if has_visual_intent else "false" },
+  "visual_inspection_query": "Specific question to inspect if has_visual_inspection is true, else ''",
+  "completion_speech": "Warm spoken confirmation after completion",
+  "steps": [
     {{
-      "desc": "Short description (e.g. 'Counting to 10', 'Walking forward 2 steps', 'Turning 90 degrees left')",
-      "type": "walk_forward | walk_backward | rotate_left | rotate_right | speak | pause | gesture",
-      "text": "Spoken text if type is speak/count (e.g. 'Counting to 10: 1, 2, 3... 10!')",
-      "gesture": "Name of animation if type is gesture (from {valid_gestures})",
+      "desc": "Short description (e.g. 'Walking forward', 'Turning 90 degrees left', 'Dancing')",
+      "type": "walk_forward | walk_backward | rotate_left | rotate_right | pose | gesture | speak | audio | pause",
+      "gesture": "Name from {valid_gestures} if type is gesture",
+      "text": "Text to speak if type is speak",
+      "audio_track": "Track or alarm name if type is audio",
       "vx": 45,
       "omega": 0,
       "duration_s": 2.5
     }}
-  ],
-  "visual_inspection_query": "What specific question to inspect in camera at destination (e.g. 'How many fingers is the user holding up?')"
+  ]
 }}
 
-RULES FOR MOTION:
-- 'turn left' or 'turn 90 degrees left': type='rotate_left', vx=0, omega=-40, duration_s=2.25
-- 'turn right' or 'turn 90 degrees right': type='rotate_right', vx=0, omega=40, duration_s=2.25
-- 'walk forward': type='walk_forward', vx=45, omega=0, duration_s=2.5
-- 'count to N' or verbal action: type='speak', text='1, 2, 3... N!'
+RULES:
+- 'turn left', 'rotate left', 'twist left 90': type='rotate_left', vx=0, omega=-40, duration_s=2.25
+- 'turn right', 'rotate right', 'twist right 90': type='rotate_right', vx=0, omega=40, duration_s=2.25
+- 'twist N degrees': if angle is small (<40 deg) without direction, type='pose', pos_z=0, yaw=N
+- 'walk', 'walk forward': type='walk_forward', vx=45, omega=0, duration_s=2.5
+- 'dance', 'wiggle': type='gesture', gesture='dance'
+- 'wave': type='gesture', gesture='wave'
+- 'baby shark': type='audio', audio_track='baby_shark'
 """
-        plan = None
-        client = self.llm._ensure()
-        try:
-            resp = client.chat.completions.create(
-                model=self.llm.model,
-                messages=[{"role": "user", "content": plan_prompt}],
-                response_format={"type": "json_object"},
-                temperature=0.2,
-                max_tokens=1024,
-            )
-            raw_content = resp.choices[0].message.content or "{}"
-            plan = safe_extract_json(raw_content)
-        except Exception as e:
-            log.error("Plan compilation error: %s", e)
-            self.fast_visual_qa(user_goal)
-            return
+        plan = initial_plan
+        if not plan:
+            client = self.llm._ensure()
+            try:
+                resp = client.chat.completions.create(
+                    model=self.llm.model,
+                    messages=[{"role": "user", "content": plan_prompt}],
+                    response_format={"type": "json_object"},
+                    temperature=0.2,
+                    max_tokens=1024,
+                )
+                raw_content = resp.choices[0].message.content or "{}"
+                plan = safe_extract_json(raw_content)
+            except Exception as e:
+                log.error("Plan compilation error: %s", e)
+                self.fast_visual_qa(user_goal)
+                return
 
-        # Safely extract plan structure regardless of dict or list return
-        motion_steps = []
-        visual_query = user_goal
+        steps = []
+        is_visual = False
+        visual_query = ""
+        completion_speech = "All actions completed."
+
         if isinstance(plan, dict):
             task_title = plan.get("task_title") or plan.get("title") or task_title
-            visual_query = plan.get("visual_inspection_query") or plan.get("query") or user_goal
-            raw_steps = plan.get("motion_steps") or plan.get("steps") or plan.get("timeline") or []
+            is_visual = bool(plan.get("has_visual_inspection", False)) or has_visual_intent
+            visual_query = plan.get("visual_inspection_query", "")
+            completion_speech = plan.get("completion_speech", completion_speech)
+            raw_steps = plan.get("steps") or plan.get("motion_steps") or plan.get("timeline") or []
             if isinstance(raw_steps, list):
-                motion_steps = raw_steps
-        elif isinstance(plan, list):
-            for item in plan:
-                if isinstance(item, dict):
-                    motion_steps.append(item)
-                elif isinstance(item, str):
-                    motion_steps.append({"desc": item.replace("_", " ").title(), "type": item})
-
-        # Fallback keyword extraction if motion parsing returned empty
-        if not motion_steps:
-            norm_lower = user_goal.lower()
-            if "count" in norm_lower:
-                motion_steps.append({"desc": "Counting to 10", "type": "speak", "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10!"})
-            if "walk" in norm_lower or "step" in norm_lower:
-                motion_steps.append({"desc": "Walking forward", "type": "walk_forward", "vx": 45, "omega": 0, "duration_s": 2.5})
-            if "left" in norm_lower:
-                motion_steps.append({"desc": "Turning 90° left", "type": "rotate_left", "vx": 0, "omega": -40, "duration_s": 2.25})
-            elif "right" in norm_lower or "turn" in norm_lower or "rotate" in norm_lower:
-                motion_steps.append({"desc": "Turning 90° right", "type": "rotate_right", "vx": 0, "omega": 40, "duration_s": 2.25})
+                steps = raw_steps
 
         ui_steps = []
-        for idx, s in enumerate(motion_steps):
+        for idx, s in enumerate(steps):
             ui_steps.append({"index": idx, "label": s.get("desc", f"Step {idx+1}"), "type": s.get("type", "motion")})
-        ui_steps.append({"index": len(ui_steps), "label": "Inspect Camera & Evaluate Conditions", "type": "vision"})
-        ui_steps.append({"index": len(ui_steps), "label": "Execute Resulting Action", "type": "action"})
+        if is_visual:
+            ui_steps.append({"index": len(ui_steps), "label": "Inspect Camera View", "type": "vision"})
+            ui_steps.append({"index": len(ui_steps), "label": "Evaluate Branching Conditions", "type": "action"})
 
         if self.event:
             self.event({
                 "stage": "plan",
                 "title": f"Task: {task_title}",
-                "thought": f"Executing physical procedure: '{user_goal}'",
+                "thought": f"Executing task graph for: '{user_goal}'",
                 "steps": ui_steps,
                 "active_step": 0,
             })
 
-        # 2. Execute Physical Steps Chronologically
-        for step_idx, step in enumerate(motion_steps):
+        # 2. Execute Physical & Logical Steps Chronologically
+        for step_idx, step in enumerate(steps):
             if self.abort_event.is_set():
                 return
             if self.event:
@@ -288,13 +283,8 @@ RULES FOR MOTION:
                 })
 
             stype = str(step.get("type", "walk_forward")).lower()
-            dur = float(step.get("duration_s", 2.0))
-            hip = float(step.get("hip_stance", step.get("hip_swing", 20)))
-            sh = float(step.get("step_height", 35))
-            ct = float(step.get("cycle_time", 0.8))
-            gt = str(step.get("gait", "tripod"))
-            pz = float(step.get("pos_z", 0))
-            vy = float(step.get("vy", 0.0))
+            sdesc = str(step.get("desc", "")).lower()
+            dur = float(step.get("duration_s", (step.get("duration_ms", 2500) / 1000.0) if step.get("duration_ms") else 2.0))
 
             if stype in ("speak", "say", "count"):
                 speak_text = step.get("text") or step.get("desc") or ""
@@ -302,103 +292,79 @@ RULES FOR MOTION:
                     self.reply(speak_text)
                     tts_dur = self.speak(speak_text) or 0.0
                     self._sleep_interruptible(max(0.5, tts_dur + 0.3))
+            elif stype in ("audio", "sound"):
+                track = step.get("audio_track") or step.get("track") or "curious"
+                if "baby_shark" in track.lower():
+                    self.reply("Playing Baby Shark!")
+                    self.speak("Baby shark doo doo doo doo doo doo!")
+                else:
+                    self.publish_s3_cmd({"type": "audio", "action": "alarm", "payload": track})
             elif stype in ("pause", "wait"):
                 self._sleep_interruptible(dur)
-            elif stype == "gesture" or stype in self.animations or normalize_animation_name(stype) in self.animations:
-                gname = step.get("gesture") or stype
+            elif stype in ("gesture", "sequence") or stype in self.animations or normalize_animation_name(stype) in self.animations:
+                gname = step.get("gesture") or step.get("id") or stype
                 self._execute_gesture(gname)
             else:
-                if "left" in stype:
-                    vx = float(step.get("vx", 0.0))
-                    omega = float(step.get("omega", -40.0))
-                elif "right" in stype:
-                    vx = float(step.get("vx", 0.0))
-                    omega = float(step.get("omega", 40.0))
-                elif "backward" in stype or "back" in stype:
-                    vx = float(step.get("vx", -45.0))
-                    omega = float(step.get("omega", 0.0))
-                else:
-                    vx = float(step.get("vx", 45.0))
-                    omega = float(step.get("omega", 0.0))
+                vx = float(step.get("vx", 0.0))
+                omega = float(step.get("omega", 0.0))
+                if "left" in stype and omega == 0: omega = -40.0
+                elif "right" in stype and omega == 0: omega = 40.0
+                elif "backward" in stype and vx == 0: vx = -45.0
+                elif ("walk" in stype or "forward" in stype) and vx == 0: vx = 45.0
 
-                if not self._move(
-                    vx=vx, omega=omega, duration_s=dur,
-                    vy=vy, gait=gt, step_height=sh,
-                    cycle_time=ct, hip_stance=hip, pos_z=pz
-                ):
+                if not self._move(vx=vx, omega=omega, duration_s=dur):
                     return
 
-        # 3. Arrived at Destination -> Capture Fresh Camera Snapshot
-        time.sleep(0.4)
-        img_b64 = self.fetch_snapshot()
-        if not img_b64:
-            self.reply("I reached the destination, but the camera buffer is offline.")
-            return
+        # 3. Visual Perception Branching (ONLY if plan requested it)
+        if is_visual:
+            eval_step_idx = len(steps)
+            if self.event:
+                self.event({
+                    "stage": "step_progress",
+                    "title": f"Task: {task_title}",
+                    "active_step": eval_step_idx,
+                    "thought": "Inspecting camera from new position...",
+                    "steps": ui_steps,
+                })
 
-        eval_step_idx = len(motion_steps)
-        if self.event:
-            self.event({
-                "stage": "step_progress",
-                "title": f"Task: {task_title}",
-                "active_step": eval_step_idx,
-                "thought": "Inspecting camera from new position...",
-                "steps": ui_steps,
-            })
+            time.sleep(0.3)
+            img_b64 = self.fetch_snapshot()
+            if not img_b64:
+                self.reply("Reached target position, but camera feed is offline.")
+                return
 
-        query = visual_query
+            branch_prompt = f"""You are the visual cortex of a 6-legged robot.
+User goal: "{user_goal}".
+Specific query: "{visual_query or user_goal}".
+Available gestures: {valid_gestures} (or 'none').
 
-        # 4. Universal Dynamic Decision & Branching via VLM
-        branch_prompt = f"""You are the visual cortex and decision engine of an agile 6-legged robot.
-The user's original goal with conditional rules was: "{user_goal}".
-Specific condition query: "{query}".
-Available robot gesture animations: {valid_gestures} (or 'none').
-
-Inspect this camera image (taken at your new physical position) and decide:
-1. What do you observe?
-2. Based on the user's conditional rules (e.g. if >3 dance, if <=3 wave, if person seen cheer, etc.), which gesture animation should be executed?
-3. What is the warm spoken reply in first-person (1-2 sentences)?
-
-Respond strictly in JSON:
+Inspect image and return JSON:
 {{
-  "observation": "1-sentence description of what is seen in the image",
+  "observation": "1-sentence visual description",
   "chosen_gesture": "Name from {valid_gestures} or 'none'",
-  "speech": "Spoken reply explaining what you saw from your new position and what action you are taking"
-}}
-"""
-        eval_raw = self.llm.inspect_vision(prompt=branch_prompt, image_b64=img_b64)
-        branch_res = safe_extract_json(eval_raw)
+  "speech": "First-person reply explaining what you saw and what you are doing"
+}}"""
+            eval_raw = self.llm.inspect_vision(prompt=branch_prompt, image_b64=img_b64)
+            branch_res = safe_extract_json(eval_raw)
 
-        if isinstance(branch_res, dict):
-            obs = branch_res.get("observation", eval_raw)
-            chosen_gesture = str(branch_res.get("chosen_gesture", "none")).strip().lower()
-            speech = str(branch_res.get("speech", f"From my new spot, I see: {obs}")).strip()
+            obs = branch_res.get("observation", str(eval_raw)) if isinstance(branch_res, dict) else str(eval_raw)
+            chosen_gesture = str(branch_res.get("chosen_gesture", "none")).strip().lower() if isinstance(branch_res, dict) else "none"
+            speech = str(branch_res.get("speech", f"I see: {obs}")).strip() if isinstance(branch_res, dict) else obs
+
+            self.reply(speech)
+            self.speak(speech)
+            if chosen_gesture and chosen_gesture != "none":
+                self._execute_gesture(chosen_gesture)
         else:
-            obs = str(eval_raw)
-            chosen_gesture = "none"
-            speech = obs
-
-        # 5. Execute Chosen Branch & Speak
-        branch_step_idx = len(motion_steps) + 1
-        if self.event:
-            self.event({
-                "stage": "step_progress",
-                "title": f"Task: {task_title}",
-                "active_step": branch_step_idx,
-                "thought": f"Decision: {obs}",
-                "steps": ui_steps,
-            })
-
-        self.reply(speech)
-        self.speak(speech)
-
-        if chosen_gesture and chosen_gesture != "none":
-            self._execute_gesture(chosen_gesture)
+            # Pure motion/gesture completion
+            if completion_speech and not self.abort_event.is_set():
+                self.reply(completion_speech)
 
         if self.event:
             self.event({
                 "stage": "done",
                 "title": f"Task: {task_title}",
-                "thought": f"Completed: {speech}",
+                "thought": "Execution complete.",
                 "active_step": len(ui_steps),
                 "steps": ui_steps,
             })

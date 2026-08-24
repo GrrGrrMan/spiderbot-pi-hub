@@ -1,0 +1,37 @@
+{
+  "version": "2.0.0",
+  "robot_id": "hexapod-v2",
+  "dimensions": {
+    "units": "millimeters",
+    "coxia": 52,
+    "femur": 66,
+    "tibia": 132,
+    "front": 50,
+    "side": 86.6,
+    "middle": 100
+  },
+  "cartesian_bounds": {
+    "pos_z": { "min": -40, "max": 50, "default": 0, "units": "mm" },
+    "pos_x": { "min": -30, "max": 30, "default": 0, "units": "mm" },
+    "pos_y": { "min": -30, "max": 30, "default": 0, "units": "mm" },
+    "roll":  { "min": -15, "max": 15, "default": 0, "units": "deg" },
+    "pitch": { "min": -15, "max": 15, "default": 0, "units": "deg" },
+    "yaw":   { "min": -20, "max": 20, "default": 0, "units": "deg" }
+  },
+  "locomotion_bounds": {
+    "vx": { "min": -60, "max": 60, "default": 40, "units": "mm/s" },
+    "vy": { "min": -60, "max": 60, "default": 0, "units": "mm/s" },
+    "omega": { "min": -50, "max": 50, "default": 25, "units": "deg/s" },
+    "step_height": { "min": 15, "max": 60, "default": 38, "units": "mm" },
+    "cycle_time": { "min": 0.4, "max": 2.5, "default": 0.8, "units": "s" },
+    "hip_stance": { "min": 0, "max": 45, "default": 20, "units": "deg" },
+    "leg_stance": { "min": -30, "max": 30, "default": 0, "units": "mm" }
+  },
+  "gaits": ["tripod", "ripple", "wave"],
+  "mqtt_contracts": {
+    "cmd": "hexapod/{device_id}/cmd",
+    "telemetry": "hexapod/{device_id}/telemetry",
+    "ai": "hexapod/{device_id}/ai",
+    "audio": "hexapod/{device_id}/audio"
+  }
+}

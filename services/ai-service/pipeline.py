@@ -17,20 +17,13 @@ log = logging.getLogger("ai.pipeline")
 
 CANNED_UNKNOWN = "I didn't catch that command — try saying 'walk forward' or select an action."
 
-PROCEDURAL_TRIGGERS = [
-    "then rotate", "then turn", "then walk", "then move", "then look", "then see",
-    "if you can see", "if you see", "if >", "if <", "if =", "dance if", "wave if", "cheer if",
-    ", then", "and then", "if not", "after that", "walk until", "rotate until"
-]
-
-
 class PipelineResult:
     def __init__(
         self,
         timeline: Optional[List[Dict[str, Any]]] = None,
         reply: str = "",
         order: str = "tts_first",
-        mode: str = "standard",  # "standard" | "procedural"
+        mode: str = "standard",  # "standard" | "compound"
         goal_text: str = "",
         thought: str = "",
         task_title: str = "",
@@ -72,20 +65,23 @@ class Pipeline:
         if not norm:
             return PipelineResult(reply=CANNED_UNKNOWN)
 
-        # 1. LLM-First Path: Procedural / Multi-step program
+        # 1. Primary Cognitive Planner: LLM chat with full multimodal context
         if self.llm and self.llm.status != "offline":
-            if any(k in norm for k in PROCEDURAL_TRIGGERS):
-                return PipelineResult(mode="procedural", goal_text=text, thought="Compiling dynamic task...")
-
-            # 2. LLM-First Path: Coordinated Multimodal Kinematics & Vision
             try:
                 speech, timeline, order, thought, task_title, camera_cmd, audio_cmd = self.llm.chat(
                     self.actions, self.animations, text, history=history or [], image_b64=image_b64, memory_block=memory_block
                 )
+
+                # Check if this requires multi-step compound graph execution
+                is_compound = len(timeline) > 1 or any(
+                    s.get("type") in ("perception", "condition", "tool") or "if" in s for s in timeline
+                )
+
                 return PipelineResult(
                     timeline=timeline,
                     reply=speech,
                     order=order,
+                    mode="compound" if is_compound else "standard",
                     thought=thought,
                     task_title=task_title or "Task",
                     goal_text=text,
@@ -95,7 +91,7 @@ class Pipeline:
             except Exception as e:
                 log.warning("Primary LLM reasoning failed, dropping to offline keyword fallback: %s", e)
 
-        # 3. Safe Offline Fallback (Only when LLM is unreachable)
+        # 2. Safe Deterministic Offline Fallback (When LLM is offline)
         action = match_action(text, self.actions)
         if action:
             return PipelineResult(
@@ -121,9 +117,13 @@ class Pipeline:
     ):
         abort = abort_event or threading.Event()
 
-        # 1. Procedural Execution Path
-        if result.mode == "procedural" and embodied_agent:
-            embodied_agent.run_procedural_task(result.goal_text)
+        # 1. Multi-Step Compound Graph Path
+        if result.mode == "compound" and embodied_agent:
+            embodied_agent.run_procedural_task(result.goal_text, initial_plan={
+                "task_title": result.task_title,
+                "steps": result.timeline,
+                "completion_speech": result.reply,
+            })
             return
 
         timeline = result.timeline

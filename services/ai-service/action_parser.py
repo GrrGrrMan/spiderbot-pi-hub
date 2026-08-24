@@ -38,6 +38,8 @@ def normalize_animation_name(name):
         "standUp": "stand_up",
         "sitdown": "sit_down",
         "sitDown": "sit_down",
+        "twist_torso": "look_around",
+        "twist_and_look": "look_around",
     }
     return aliases.get(n, n)
 
