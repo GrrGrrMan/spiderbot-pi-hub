@@ -116,20 +116,25 @@ class Pipeline:
         abort_event: Optional[threading.Event] = None,
     ):
         abort = abort_event or threading.Event()
-
-        # 1. Multi-Step Compound Graph Path
-        if result.mode == "compound" and embodied_agent:
-            embodied_agent.run_procedural_task(result.goal_text, initial_plan={
-                "task_title": result.task_title,
-                "steps": result.timeline,
-                "completion_speech": result.reply,
-            })
-            return
-
-        timeline = result.timeline
+        timeline = result.timeline or []
         order = result.order or "tts_first"
         reply = result.reply or ""
         task_title = result.task_title or "Task"
+
+        # 1. Multi-Step Compound Graph Path
+        if result.mode == "compound" and embodied_agent:
+            if order == "tts_first" and reply and not abort.is_set():
+                on_ai_reply(reply)
+                tts_dur = on_tts_text(reply) or 0.0
+                if wait_for_audio_fn:
+                    wait_for_audio_fn(tts_dur + 0.5)
+
+            embodied_agent.run_procedural_task(result.goal_text, initial_plan={
+                "task_title": task_title,
+                "steps": timeline,
+                "completion_speech": "" if order == "tts_first" else reply,
+            })
+            return
 
         # 2. Hardware Camera Tuning & Clamping
         if result.camera_cmd and on_cam_cmd:
@@ -198,8 +203,14 @@ class Pipeline:
         if on_agent_event and timeline:
             steps = []
             for idx, s in enumerate(timeline):
-                label = s.get("id") or s.get("name") or s.get("type", f"Step {idx+1}")
-                steps.append({"index": idx, "label": label.replace("_", " ").title(), "type": s.get("type", "action")})
+                p = s.get("params") or {}
+                raw_label = s.get("desc") or s.get("name") or s.get("id") or s.get("type") or f"Action {idx+1}"
+                dur_s = p.get("duration_s") or s.get("duration_s") or (
+                    (p.get("duration_ms") or s.get("duration_ms", 0)) / 1000.0
+                )
+                dur_tag = f" ({int(dur_s)}s)" if dur_s and dur_s >= 1 and "(" not in raw_label else ""
+                clean_label = f"{raw_label.replace('_', ' ').title()}{dur_tag}"
+                steps.append({"index": idx, "label": clean_label, "type": s.get("type", "action")})
             on_agent_event({
                 "stage": "plan",
                 "title": f"Task: {task_title}",
