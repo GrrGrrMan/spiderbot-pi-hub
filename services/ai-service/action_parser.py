@@ -45,9 +45,9 @@ def normalize_animation_name(name):
 
 
 WAKE_PHONETICS = [
-    "spider", "spotter", "spader", "spyder", "hexapod", "hexa", "spida", "spotta", "spitter", "spada", "hexap", "spodder"
+    "hexa", "hexap", "peter parker", "peter", "parker", "peeter", "peater", "peaker"
 ]
-WAKE_PREFIXES = ["hey", "ok", "okay", "hi", "hello", "a", "yo"]
+WAKE_PREFIXES = ["hey", "hi", "hello", "hay", "hai"]
 
 
 def extract_wake_command(text: str) -> tuple[Optional[str], str]:
