@@ -6,7 +6,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
-from action_parser import compile_animation_sequence, load_animations, normalize_animation_name
+from action_parser import compile_animation_sequence, compile_dynamic_joint_sequence, load_animations, normalize_animation_name
 
 log = logging.getLogger("ai.embodied")
 
@@ -156,8 +156,9 @@ class EmbodiedAgent:
             "pitch": pitch,
             "yaw": yaw,
             "duration_ms": int(duration_s * 1000),
+            "lease_ms": 350,
         }
-        self.publish_s3_cmd(motion_payload)
+
         if self.directive:
             self.directive({
                 "type": "directive",
@@ -166,11 +167,20 @@ class EmbodiedAgent:
                 "duration_ms": int(duration_s * 1000),
                 "payload": motion_payload,
             })
-        ok = self._sleep_interruptible(duration_s)
+
+        # 20 Hz Command Lease Stream (keeps 300ms hardware watchdog alive safely)
+        start_t = time.time()
+        while time.time() - start_t < duration_s:
+            if self.abort_event.is_set():
+                self._stop_motion()
+                return False
+            self.publish_s3_cmd(motion_payload)
+            time.sleep(0.05)
+
         if is_locomotion:
             self._stop_motion()
         self._sleep_interruptible(0.05)
-        return ok
+        return True
 
     def _execute_gesture(self, gesture_name: str):
         """Executes any dynamic animation defined in animations.json."""
@@ -381,7 +391,8 @@ RULES:
                 })
 
             p = step.get("params") or {}
-            stype = str(step.get("type", "walk_forward")).lower()
+            raw_type = step.get("type") or step.get("action") or "motion"
+            stype = str(raw_type).lower().strip()
             act_id = str(step.get("id") or step.get("action") or "").lower()
             sdesc = str(step.get("desc") or "").strip()
 
@@ -397,11 +408,16 @@ RULES:
             roll = float(p.get("roll", step.get("roll", 0.0)))
             pitch = float(p.get("pitch", step.get("pitch", 0.0)))
             yaw = float(p.get("yaw", step.get("yaw", 0.0)))
-            hip_stance = float(p.get("hip_stance", step.get("hip_stance", 20.0)))
-            leg_stance = float(p.get("leg_stance", step.get("leg_stance", 0.0)))
-            step_height = float(p.get("step_height", step.get("step_height", 38.0)))
-            cycle_time = float(p.get("cycle_time", step.get("cycle_time", 0.8)))
+            hip_stance = float(p.get("hip_stance", p.get("hip_swing", step.get("hip_stance", step.get("hip_swing", 20.0)))))
+            leg_stance = float(p.get("leg_stance", p.get("spread", step.get("leg_stance", 0.0))))
+            step_height = float(p.get("step_height", p.get("lift", step.get("step_height", 38.0))))
+            cycle_time = float(p.get("cycle_time", p.get("speed", step.get("cycle_time", 0.8))))
             gait = str(p.get("gait", step.get("gait", "tripod")))
+
+            hip_stance = max(0.0, min(45.0, hip_stance))
+            leg_stance = max(-30.0, min(40.0, leg_stance))
+            step_height = max(15.0, min(65.0, step_height))
+            cycle_time = max(0.4, min(2.5, cycle_time))
 
             anim_candidate = normalize_animation_name(act_id or stype)
             is_anim = (
@@ -410,9 +426,35 @@ RULES:
                 or act_id in self.animations
             )
 
-            if is_anim:
+            if "joints" in p or "joints" in step or stype in ("joints", "joint_override"):
+                raw_joints = p.get("joints") or step.get("joints") or {}
+                seq_payload = compile_dynamic_joint_sequence(raw_joints, dur_ms=int(dur * 1000), auto_balance=p.get("auto_balance", False))
+                self.publish_s3_cmd(seq_payload)
+                if self.directive:
+                    self.directive({
+                        "type": "directive",
+                        "action_id": "dynamic_joint_motion",
+                        "name": sdesc or "Dynamic Joint Motion",
+                        "duration_ms": seq_payload["duration_ms"],
+                        "payload": seq_payload,
+                    })
+                self._sleep_interruptible(seq_payload["duration_ms"] / 1000.0)
+            elif is_anim:
                 target_anim = anim_candidate if anim_candidate in self.animations else act_id
                 self._execute_gesture(target_anim)
+            elif stype in ("system", "power", "freeze", "sleep", "power_off", "shutdown") or act_id in ("freeze", "power_off", "sleep", "shut_down", "wake", "power_on"):
+                is_power_off = any(k in f"{stype} {act_id} {sdesc}".lower() for k in ("freeze", "off", "sleep", "limp", "down"))
+                sys_payload = {"type": "system", "power": not is_power_off}
+                self.publish_s3_cmd(sys_payload)
+                if self.directive:
+                    self.directive({
+                        "type": "directive",
+                        "action_id": "freeze" if is_power_off else "wake",
+                        "name": "Power Off (Freeze)" if is_power_off else "Wake Up",
+                        "duration_ms": int(dur * 1000),
+                        "payload": sys_payload,
+                    })
+                self._sleep_interruptible(dur)
             elif stype in ("camera", "cam", "flashlight", "light"):
                 cam_obj = step.get("camera_cmd") or p.get("camera_cmd") or {}
                 if not cam_obj and "flash" in p:
@@ -429,11 +471,10 @@ RULES:
                     self._sleep_interruptible(max(0.5, tts_dur + 0.3))
             elif stype in ("audio", "sound"):
                 track = str(p.get("track") or step.get("audio_track") or step.get("track") or "curious")
-                if "baby_shark" in track.lower():
-                    self.reply("Playing Baby Shark!")
-                    self.speak("Baby shark doo doo doo doo doo doo!")
+                if track in ("curious", "startle", "idle"):
+                    self.publish_s3_cmd({"type": "audio", "action": "alarm", "payload": track})
                 else:
-                    self._on_audio({"action": "alarm", "payload": track})
+                    self.publish_s3_cmd({"type": "audio", "action": "play", "query": track})
             elif stype in ("pause", "wait"):
                 self._sleep_interruptible(dur)
             else:
@@ -470,11 +511,13 @@ RULES:
                     "stage": "step_progress",
                     "title": f"Task: {task_title}",
                     "active_step": eval_step_idx,
-                    "thought": "Inspecting camera from new position...",
+                    "thought": "Stabilizing stance for clear visual inspection...",
                     "steps": ui_steps,
                 })
 
-            time.sleep(0.3)
+            # Settle-Before-Acquire: Zero velocity and settle for 150ms to eliminate camera shake
+            self._stop_motion()
+            time.sleep(0.15)
             img_b64 = self.fetch_snapshot()
             if not img_b64:
                 self.reply("Reached target position, but camera feed is offline.")
@@ -520,8 +563,11 @@ Inspect image and return JSON:
         self.abort_event.clear()
         task_title = extract_clean_objective(user_question)
         if self.event:
-            self.event({"stage": "thinking", "thought": f"Inspecting view for: '{task_title}'"})
+            self.event({"stage": "thinking", "thought": f"Stabilizing view for: '{task_title}'"})
 
+        # Settle-Before-Acquire
+        self._stop_motion()
+        time.sleep(0.15)
         img_b64 = self.fetch_snapshot()
         if not img_b64:
             err = "Camera buffer offline."

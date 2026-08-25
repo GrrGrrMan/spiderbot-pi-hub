@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, List, Optional
 from action_parser import (
     action_by_id,
     compile_animation_sequence,
+    compile_dynamic_joint_sequence,
     load_animations,
     match_action,
     normalize_animation_name,
@@ -41,18 +42,23 @@ class PipelineResult:
         self.audio_cmd = audio_cmd
 
 
+import json
+
+
 class Pipeline:
     def __init__(
         self,
         actions: List[Dict[str, Any]],
         llm: Optional[Any] = None,
         stt: Optional[Any] = None,
-        animations: Optional[Dict[str, Any]] = None
+        animations: Optional[Dict[str, Any]] = None,
+        skill_manager: Optional[Any] = None,
     ):
         self.actions = actions
         self.animations = animations or load_animations()
         self.llm = llm
         self.stt = stt
+        self.skill_manager = skill_manager
 
     def decide(
         self,
@@ -61,6 +67,8 @@ class Pipeline:
         image_b64: Optional[str] = None,
         memory_block: str = "",
         state_block: str = "",
+        dst_block: str = "",
+        skills_block: str = "",
     ) -> PipelineResult:
         norm = (text or "").lower().strip().replace("foward", "forward")
         if not norm:
@@ -69,9 +77,19 @@ class Pipeline:
         # 1. Primary Cognitive Planner: LLM chat with full multimodal context
         if self.llm and self.llm.status != "offline":
             try:
-                speech, timeline, order, thought, task_title, camera_cmd, audio_cmd = self.llm.chat(
-                    self.actions, self.animations, text, history=history or [], image_b64=image_b64, memory_block=memory_block, state_block=state_block
+                skill_fn = self.skill_manager.execute_skill if self.skill_manager else None
+                speech, timeline, order, thought, task_title, camera_cmd, audio_cmd, tool_call = self.llm.chat(
+                    self.actions, self.animations, text, history=history or [], image_b64=image_b64,
+                    memory_block=memory_block, state_block=state_block, dst_block=dst_block, skills_block=skills_block,
+                    skill_executor=skill_fn
                 )
+
+                # Fallback support for prompt-emulated tool calls if model returned JSON tool_call
+                if tool_call and skill_fn:
+                    tool_name = tool_call.get("name", "")
+                    tool_args = tool_call.get("args", {})
+                    log.info("Executing Fallback Emulated Tool -> %s with args: %s", tool_name, tool_args)
+                    skill_fn(tool_name, tool_args)
 
                 # Check if this requires multi-step compound graph execution
                 is_compound = len(timeline) > 1 or any(
@@ -278,6 +296,16 @@ class Pipeline:
                         time.sleep(total_ms / 1000.0)
                         continue
 
+                # Generalized Dynamic Joint / Leg Overrides
+                if stype in ("joints", "joint_override") or "joints" in params or "joints" in step:
+                    raw_joints = params.get("joints") or step.get("joints") or {}
+                    seq_payload = compile_dynamic_joint_sequence(raw_joints, dur_ms=dur_ms, auto_balance=params.get("auto_balance", False))
+                    on_cmd(seq_payload)
+                    if on_action_directive:
+                        on_action_directive(seq_payload)
+                    time.sleep(seq_payload["duration_ms"] / 1000.0)
+                    continue
+
                 # Action Preset Fallback (Bypass if the LLM provided custom kinematics)
                 has_kinematics = stype in ("pose", "gait") or any(k in params for k in ("pos_z", "pos_x", "pos_y", "roll", "pitch", "yaw", "vx", "vy", "omega"))
                 act = action_by_id(self.actions, act_id)
@@ -339,8 +367,18 @@ class Pipeline:
                         "roll": 0, "pitch": 0, "yaw": 0,
                     }
 
-                # Clamp Kinematics Parameters to Safe Physical Envelopes
-                for k in ("vx", "vy", "omega", "step_height", "cycle_time", "leg_stance", "pos_x", "pos_y", "pos_z", "roll", "pitch", "yaw"):
+                # Extract gait aliases (e.g. "hip_swing" -> "hip_stance", "speed" -> "cycle_time")
+                if "hip_swing" in params and "hip_stance" not in params:
+                    params["hip_stance"] = params["hip_swing"]
+                if "swing" in params and "hip_stance" not in params:
+                    params["hip_stance"] = params["swing"]
+                if "lift" in params and "step_height" not in params:
+                    params["step_height"] = params["lift"]
+                if "speed" in params and "cycle_time" not in params:
+                    params["cycle_time"] = params["speed"]
+
+                # Clamp Kinematics & Gait Parameters to Safe Physical Envelopes
+                for k in ("vx", "vy", "omega", "step_height", "cycle_time", "hip_stance", "leg_stance", "pos_x", "pos_y", "pos_z", "roll", "pitch", "yaw"):
                     if k in params:
                         try:
                             val = float(params[k])
@@ -350,6 +388,14 @@ class Pipeline:
                                 val = max(-30.0, min(30.0, val))
                             elif k in ("roll", "pitch", "yaw"):
                                 val = max(-15.0, min(15.0, val))
+                            elif k == "hip_stance":
+                                val = max(0.0, min(45.0, val))
+                            elif k == "leg_stance":
+                                val = max(-30.0, min(40.0, val))
+                            elif k == "step_height":
+                                val = max(15.0, min(65.0, val))
+                            elif k == "cycle_time":
+                                val = max(0.4, min(2.5, val))
                             payload[k] = val
                         except (ValueError, TypeError):
                             pass
@@ -359,6 +405,7 @@ class Pipeline:
 
                 run_dur = dur_ms or 2500
                 payload["duration_ms"] = run_dur
+                payload["lease_ms"] = 350
 
                 directive_payload = {
                     "type": "directive",
@@ -368,15 +415,22 @@ class Pipeline:
                     "payload": payload,
                 }
 
-                on_cmd(payload)
                 if on_action_directive:
                     on_action_directive(directive_payload)
 
-                time.sleep(run_dur / 1000.0)
+                # 20 Hz Leased Dispatch Loop with Preemption Check
+                dur_s = run_dur / 1000.0
+                start_t = time.time()
+                while time.time() - start_t < dur_s:
+                    if abort.is_set():
+                        break
+                    on_cmd(payload)
+                    time.sleep(0.05)
 
                 # Stop velocity while holding final body stance on physical hardware
                 stop = dict(payload)
                 stop["vx"] = stop["vy"] = stop["omega"] = 0
+                stop["lease_ms"] = 0
                 on_cmd(stop)
 
         try:

@@ -7,14 +7,17 @@ SRC="$(cd "$(dirname "$0")/.." && pwd)"
 CONF_SRC="${SRC}/../../conf/ai.env"
 
 echo "==> Installing OmniRoute AI Service from $SRC to $APP"
-sudo mkdir -p "$APP" /etc/hexapod-ai
-sudo cp "$SRC"/ai_service.py "$SRC"/action_parser.py "$SRC"/pipeline.py "$SRC"/embodied_agent.py "$SRC"/actions.json "$SRC"/animations.json "$APP"/
+sudo apt-get update -qq && sudo apt-get install -y -qq mpv ffmpeg
+sudo mkdir -p "$APP" /etc/hexapod-ai /opt/hexapod-ai/media/music /opt/hexapod-ai/media/sfx
+sudo chown -R spider:spider /opt/hexapod-ai/media
+sudo cp "$SRC"/ai_service.py "$SRC"/action_parser.py "$SRC"/memory_manager.py "$SRC"/pipeline.py "$SRC"/embodied_agent.py "$SRC"/actions.json "$SRC"/animations.json "$APP"/
 if [ -f "$SRC/../../manifests/robot_manifest.json" ]; then
     sudo cp "$SRC/../../manifests/robot_manifest.json" "$APP"/robot_manifest.json
 elif [ -f "$SRC/robot_manifest.json" ]; then
     sudo cp "$SRC/robot_manifest.json" "$APP"/robot_manifest.json
 fi
 sudo cp -r "$SRC"/providers "$APP"/
+sudo cp -r "$SRC"/skills "$APP"/
 sudo cp "$SRC"/requirements-ai.txt "$APP"/
 
 # 1. Synchronize conf/ai.env to /etc/hexapod-ai/ai.env
@@ -41,7 +44,8 @@ fi
 sudo "$APP/venv/bin/pip" install --upgrade pip -q
 sudo "$APP/venv/bin/pip" install -r "$APP/requirements-ai.txt" -q
 
-# 3. Pre-download STT/TTS artifacts
+# Expose virtualenv binaries (like yt-dlp) to system PATH
+sudo ln -sf "$APP/venv/bin/yt-dlp" /usr/local/bin/yt-dlp 2>/dev/null || true
 sudo bash "$SRC/deploy/artifacts.sh"
 
 # 4. Install & restart systemd unit

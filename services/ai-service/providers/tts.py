@@ -4,10 +4,11 @@ import io
 import json
 import logging
 import os
+import random
+import re
+import struct
 import threading
 import time
-import random
-import struct
 import uuid
 import wave
 from typing import Any, Dict, List, Optional
@@ -31,6 +32,17 @@ DEFAULT_FALLBACK_MODELS = [
     "openai/tts-1",
     "tts-1",
 ]
+
+
+def split_sentences(text: str) -> List[str]:
+    """Splits conversational text into spoken sentence boundaries for low-latency incremental playback."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return []
+    # Match sentence terminators (. ! ?) followed by whitespace or linebreaks
+    raw_splits = re.split(r"(?<=[.!?])\s+", cleaned)
+    chunks = [s.strip() for s in raw_splits if s.strip()]
+    return chunks if chunks else [cleaned]
 
 
 def convert_to_22050_mono(wav_bytes: bytes) -> bytes:

@@ -33,10 +33,39 @@ class MemoryManager:
 
         self.session_history: List[Dict[str, str]] = []
         self.memory_pool: Dict[str, Any] = {}
+        self.recent_actions: List[str] = []
+        self.last_visual_summary: str = ""
         self.last_activity = time.time()
         self._lock = threading.Lock()
 
         self._load_from_disk()
+
+    def record_action(self, action_id: str):
+        """Tracks recent physical actions to prevent repetitive behavior loops."""
+        with self._lock:
+            clean = str(action_id).strip().lower()
+            if clean and clean not in ("stop", "pose"):
+                self.recent_actions.append(clean)
+                if len(self.recent_actions) > 6:
+                    self.recent_actions.pop(0)
+
+    def set_visual_summary(self, summary: str):
+        """Caches the latest visual perception summary to reduce redundant VLM queries."""
+        with self._lock:
+            self.last_visual_summary = (summary or "").strip()
+
+    def get_dst_prompt_block(self) -> str:
+        """Constructs an active Dialogue State Tracking block for prompt injection."""
+        with self._lock:
+            lines = []
+            if self.recent_actions:
+                recent_str = ", ".join(self.recent_actions[-4:])
+                lines.append(f"- Recently Executed Actions: [{recent_str}] (Pick a DIFFERENT action on open-ended requests)")
+            if self.last_visual_summary:
+                lines.append(f"- Last Visual Observation: \"{self.last_visual_summary}\"")
+            if not lines:
+                return ""
+            return "\n### ACTIVE DIALOGUE STATE & RECENT ACTION HISTORY:\n" + "\n".join(lines) + "\n"
 
     def set_mode(self, mode: str):
         with self._lock:

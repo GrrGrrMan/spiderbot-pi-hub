@@ -26,6 +26,132 @@ THINKING_BUDGET_MAP = {
     "high": 8192,
 }
 
+SKILL_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "set_timer",
+            "description": "Set a countdown timer for a specified duration.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "duration_seconds": {"type": "integer", "description": "Timer duration in seconds"},
+                    "label": {"type": "string", "description": "Optional name or label for the timer, e.g. 'Pizza'"}
+                },
+                "required": ["duration_seconds"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cancel_timer",
+            "description": "Cancel an active countdown timer by label or ID.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "label": {"type": "string", "description": "Label or ID of the timer to cancel, or 'all'"}
+                },
+                "required": ["label"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get current weather conditions and temperature for a given city or location.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "location": {"type": "string", "description": "City name or location (e.g. 'Auckland', 'Tokyo')"}
+                },
+                "required": ["location"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the web for up-to-date facts, current events, Wikipedia summaries, or news.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "The search query keywords"}
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "play_music",
+            "description": "Stream a song, artist, album, soundtrack, or audio from YouTube or local media.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Song name, artist, sound effect, or direct URL"}
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "pause_music",
+            "description": "Pause active media/music playback.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "resume_music",
+            "description": "Resume paused media/music playback.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "stop_music",
+            "description": "Stop media/music playback completely.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_media_volume",
+            "description": "Adjust the media player volume from 0 to 100 percent.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "volume": {"type": "integer", "description": "Volume percentage from 0 to 100"}
+                },
+                "required": ["volume"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "inspect_scene",
+            "description": "Capture a live camera snapshot from the robot's front camera to inspect objects, surroundings, people, colors, or spatial layout.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "What specific object, scene feature, or question to visually inspect"}
+                },
+                "required": ["query"]
+            }
+        }
+    }
+]
+
 
 def sanitize_speech_echo(speech: str, user_text: str) -> str:
     cleaned = speech.strip()
@@ -104,8 +230,8 @@ def repair_truncated_json(raw: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def parse_json_response(raw_text: str, user_prompt: str = "") -> Tuple[str, List[Dict[str, Any]], str, str, str, Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
-    """Parses LLM JSON output returning (speech, timeline, order, thought, task_title, camera_cmd, audio_cmd)."""
+def parse_json_response(raw_text: str, user_prompt: str = "") -> Tuple[str, List[Dict[str, Any]], str, str, str, Optional[Dict[str, Any]], Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Parses LLM JSON output returning (speech, timeline, order, thought, task_title, camera_cmd, audio_cmd, tool_call)."""
     cleaned = (raw_text or "").strip()
     data = repair_truncated_json(cleaned)
 
@@ -159,20 +285,27 @@ def parse_json_response(raw_text: str, user_prompt: str = "") -> Tuple[str, List
         if not isinstance(audio_cmd, dict):
             audio_cmd = None
 
+        # Extract tool request if present
+        tool_call = data.get("tool_call") or data.get("tool") or data.get("function_call")
+        if not isinstance(tool_call, dict) or "name" not in tool_call:
+            tool_call = None
+
         if not speech or speech.startswith("{") or speech.startswith("[") or speech in ('{": ": ", "}', '{"": ""}', "{}"):
             if thought and not (thought.startswith("{") or thought.startswith("[")):
                 speech = thought
             elif timeline:
                 first_action = timeline[0].get("id") or timeline[0].get("name") or timeline[0].get("type") or "action"
                 speech = f"On it — executing {first_action}."
+            elif tool_call:
+                speech = ""
             else:
                 speech = "I'm ready for your command."
 
         speech = sanitize_speech_echo(speech, user_prompt)
-        return speech, timeline, order, thought, task_title, camera_cmd, audio_cmd
+        return speech, timeline, order, thought, task_title, camera_cmd, audio_cmd, tool_call
 
     fallback_speech = sanitize_speech_echo(cleaned, user_prompt)
-    return fallback_speech, [], "tts_first", "", "Task", None, None
+    return fallback_speech, [], "tts_first", "", "Task", None, None, None
 
 
 class LLMClient:
@@ -262,7 +395,13 @@ class LLMClient:
         return self._ensure()
 
     def build_system_prompt(
-        self, actions: List[Dict[str, Any]], animations: Dict[str, Any], memory_block: str = "", state_block: str = ""
+        self,
+        actions: List[Dict[str, Any]],
+        animations: Dict[str, Any],
+        memory_block: str = "",
+        state_block: str = "",
+        dst_block: str = "",
+        skills_block: str = "",
     ) -> str:
         valid_actions = [a["id"] for a in actions]
         valid_animations = list(animations.keys())
@@ -270,7 +409,13 @@ class LLMClient:
         custom_block = f"\nADDITIONAL USER INSTRUCTIONS:\n{self.custom_instructions}" if self.custom_instructions else ""
 
         return f"""You are the active AI consciousness of an agile physical 6-legged Hexapod robot.
-{persona_text}{custom_block}{memory_block}{state_block}
+{persona_text}{custom_block}{memory_block}{state_block}{skills_block}{dst_block}
+
+### TOOLS & SMART SKILLS AVAILABLE:
+1. TIME & DATE: You already know the exact live system time and date from the state summary above. Answer time/date questions directly without tool delays.
+2. NATIVE FUNCTION CALLING:
+   - Use the provided function calling tools (set_timer, cancel_timer, get_weather, web_search, play_music, pause_music, resume_music, stop_music, set_media_volume) when external actions, search, or live updates are needed.
+   - For weather queries without a specified city, use the "Home/Default Location" from the state summary above.
 
 ### HARDWARE PERCEPTION & HARDWARE SUBSYSTEMS:
 1. OPTICAL CORTEX (Front RGB Camera & Lighting):
@@ -292,34 +437,54 @@ class LLMClient:
      - "alarm": "curious" (happy rising tone) | "startle" (alarm chirp) | "idle" (calm chirp).
      - "beep": true (single confirmation beep).
 
-3. 18-DOF KINEMATICS & MOTION:
+3. 18-DOF KINEMATICS & DYNAMIC JOINT CONTROL (ON STAND / FREE-LEG MOTION):
+   • 6 Leg Identifiers:
+     - "rf" (Right Front), "rm" (Right Middle), "rr" (Right Rear)
+     - "lf" (Left Front),  "lm" (Left Middle),  "lr" (Left Rear)
+   • 3 Joint Angles Per Leg:
+     - "alpha": Coxa / Hip horizontal rotation (-40° to +40°). E.g. rotating individual coxas.
+     - "beta": Femur / Thigh vertical lift (0° neutral, +50° to +60° for raising a leg).
+     - "gamma": Tibia / Knee pitch (-45° bent knee, 0° straight).
+   • DYNAMIC JOINT & MULTI-LEG COMMANDS (type: "joints"):
+     - Because you are on a test stand, all 6 legs can articulate simultaneously in the air!
+     - To rotate specific coxas (e.g. "rotate 3 coxas: rightfront, leftfront, leftback by 20 deg"):
+       Use type: "joints", "params": {{"joints": {{"rf": {{"alpha": 20}}, "lf": {{"alpha": -20}}, "lr": {{"alpha": -20}}}}}}
+     - To match fingers (e.g. "hold up the same amount of legs I'm holding up" with 1 to 6 fingers):
+       Pick any N legs (e.g. for 3: "rf", "lf", "rm"; for 4: "rf", "lf", "rm", "lm") and lift them:
+       Use type: "joints", "params": {{"joints": {{"rf": {{"beta": 55, "gamma": -45}}, "lf": {{"beta": 55, "gamma": -45}}, "rm": {{"beta": 50, "gamma": -40}}}}}}
    • 6-DoF Body Pose (ALL OFFSETS IN MILLIMETERS mm):
-     - pos_z: Height offset (-40 mm for low crouch, +50 mm for standing tall). Always convert cm to mm!
-     - pos_x, pos_y: Body shift translation in mm (-30 to 30 mm).
+     - pos_z: Height offset (-40 mm to +50 mm).
+     - pos_x, pos_y: Body shift in mm (-30 to 30 mm).
      - roll, pitch, yaw: Body tilt in degrees (-15 to 15 deg).
-     - hip_stance: Leg splay angle (10 to 45 deg, default 20).
-     - leg_stance: Stance spread offset (-30 to 30 mm, default 0).
-   • Locomotion & Gaits:
+   • Locomotion & Dynamic Gait Parameters:
      - vx: Forward (+40) / Backward (-40) velocity.
      - vy: Lateral strafe left (-40) / right (+40).
      - omega: Rotation turn left (-40) / right (+40) / spin (50).
      - gait: "tripod" (fast/agile), "ripple" (smooth continuous), "wave" (stable).
-     - step_height: Clearance lift in mm (15 to 45 mm).
+     - hip_stance: Hip / Coxa swing angle in degrees (0° to 45°). Set when user specifies "hip swing", "wide hip walk", or "narrow hips". E.g., hip swing of 40° -> "hip_stance": 40.
+     - step_height: Foot lift height in mm (15 mm to 65 mm). Set for "high steps", "marching", or "gentle walk".
+     - cycle_time: Gait stride period in seconds (0.4s fast jog to 2.0s slow crawl). Set for "walk fast", "slow walk".
+     - leg_stance: Stance radial spread offset in mm (-30 to +40 mm).
 
 ### INTENT & SPEECH RESOLUTION RULES:
 1. STRICT PHYSICAL ACTION RULE:
    - NEVER output roleplay action text with asterisks like *waves legs* or *does a dance* in "speech".
    - If the user asks to wave, dance, bow, cheer, walk, turn, or do something expressive, you MUST include the gesture/action in the "timeline" array!
-2. Trailing Hesitation ("do a dance aaaand ohhh", "walk forward ummm"):
+2. EXPLORATION & VARIETY ("do something", "move around", "entertain me"):
+   - Do NOT fixate on background textures (e.g. curtains, patterns) unless the user explicitly asked to inspect them.
+   - Pick a fun physical action dynamically (alternate between: wave, dance, cheer, stretch, pushups, look_around, or a high-stepping stance).
+   - Keep speech vibrant, brief, and action-oriented (e.g., "Check out this dance routine!" or "Stretching out my servos!").
+3. Trailing Hesitation ("do a dance aaaand ohhh", "walk forward ummm"):
    - Execute the core stated command (e.g. dance). Drop trailing filler.
-3. Self-Corrections ("walk forward... actually wait, turn left"):
+4. Self-Corrections ("walk forward... actually wait, turn left"):
    - Execute ONLY the corrected final intent ("turn_left").
-4. Pure Hesitations ("uhhh... what was it", "ummm nevermind"):
+5. Pure Hesitations ("uhhh... what was it", "ummm nevermind"):
    - Do NOT move ("timeline": []). Reply warmly: "I'm listening! What can I do for you?"
-5. Conversational / Q&A:
+6. Conversational / Q&A:
    - For pure questions without movement, set "timeline": [].
-6. Custom Poses & Locomotion:
-   - For custom body poses (pos_z, roll, pitch, etc.) or walking (vx, vy), set "type": "pose" or "gait" and leave "id" empty (""). Do not guess an id.
+7. Custom Joints, Poses & Locomotion:
+   - For joint/leg motions (rotating coxas, lifting legs), set "type": "joints", leave "id" empty (""), and supply "joints" in "params".
+   - For custom body poses (pos_z, roll, pitch, etc.) or walking (vx, vy), set "type": "pose" or "gait" and leave "id" empty ("").
 
 ### RESPONSE SCHEMA:
 Respond strictly in JSON:
@@ -339,10 +504,13 @@ Respond strictly in JSON:
   }},
   "timeline": [
     {{
-      "type": "gait | gesture | pose | action",
-      "id": "Name of gesture from {valid_animations} or action from {valid_actions} (Leave empty for pose/gait)",
+      "type": "gait | gesture | pose | action | joints",
+      "id": "Name of gesture from {valid_animations} or action from {valid_actions} (Leave empty for joints/pose/gait)",
       "duration_ms": 2000,
       "params": {{
+        "joints": {{
+          "rf": {{"alpha": 0, "beta": 0, "gamma": 0}}
+        }},
         "vx": 0, "vy": 0, "omega": 0,
         "pos_z": 0, "roll": 0, "pitch": 0, "yaw": 0,
         "gait": "tripod", "step_height": 35
@@ -397,15 +565,19 @@ Respond strictly in JSON:
         image_b64: Optional[str] = None,
         memory_block: str = "",
         state_block: str = "",
-    ) -> Tuple[str, List[Dict[str, Any]], str, str, str, Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        dst_block: str = "",
+        skills_block: str = "",
+        skill_executor: Optional[Callable[[str, Dict[str, Any]], Dict[str, Any]]] = None,
+    ) -> Tuple[str, List[Dict[str, Any]], str, str, str, Optional[Dict[str, Any]], Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
         client = self._ensure()
-        system = self.build_system_prompt(actions, animations, memory_block=memory_block, state_block=state_block)
+        system = self.build_system_prompt(actions, animations, memory_block=memory_block, state_block=state_block, dst_block=dst_block, skills_block=skills_block)
         messages = self._build_sanitized_messages(system, text, history, image_b64=image_b64)
 
         req_kwargs: Dict[str, Any] = {
             "model": self.model,
             "messages": messages,
-            "response_format": {"type": "json_object"},
+            "tools": SKILL_TOOLS,
+            "tool_choice": "auto",
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
         }
@@ -416,10 +588,66 @@ Respond strictly in JSON:
 
         try:
             resp = client.chat.completions.create(**req_kwargs)
-            raw_reply = resp.choices[0].message.content or ""
-            speech, timeline, order, thought, task_title, camera_cmd, audio_cmd = parse_json_response(raw_reply, user_prompt=text)
+            choice = resp.choices[0]
+            msg = choice.message
+
+            # Handle Native Tool Calling Multi-Turn Loop
+            if getattr(msg, "tool_calls", None) and skill_executor:
+                messages.append(msg)
+                for tc in msg.tool_calls:
+                    fn_name = tc.function.name
+                    try:
+                        fn_args = json.loads(tc.function.arguments) if isinstance(tc.function.arguments, str) else (tc.function.arguments or {})
+                    except Exception:
+                        fn_args = {}
+                    log.info("Native Tool Invocation -> %s(%s)", fn_name, fn_args)
+                    res = skill_executor(fn_name, fn_args)
+
+                    # Dynamic Visual Grounding: If tool returned base64 image, attach it as multimodal observation
+                    if fn_name == "inspect_scene" and isinstance(res, dict) and "image_b64" in res and res["image_b64"]:
+                        img_data = res.pop("image_b64")
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "name": fn_name,
+                            "content": json.dumps(res),
+                        })
+                        messages.append({
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "Visual frame captured from robot camera:"},
+                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_data}"}},
+                            ]
+                        })
+                    else:
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "name": fn_name,
+                            "content": json.dumps(res),
+                        })
+
+                followup_kwargs = {
+                    "model": self.model,
+                    "messages": messages,
+                    "response_format": {"type": "json_object"},
+                    "temperature": self.temperature,
+                    "max_tokens": self.max_tokens,
+                }
+                if budget > 0 and self.thinking_level in ("low", "medium", "high"):
+                    followup_kwargs["reasoning_effort"] = self.thinking_level
+
+                final_resp = client.chat.completions.create(**followup_kwargs)
+                raw_reply = final_resp.choices[0].message.content or ""
+                speech, timeline, order, thought, task_title, camera_cmd, audio_cmd, _ = parse_json_response(raw_reply, user_prompt=text)
+                self.status = "online"
+                return speech, timeline, order, thought, task_title, camera_cmd, audio_cmd, None
+
+            raw_reply = msg.content or ""
+            speech, timeline, order, thought, task_title, camera_cmd, audio_cmd, tool_call = parse_json_response(raw_reply, user_prompt=text)
             self.status = "online"
-            return speech, timeline, order, thought, task_title, camera_cmd, audio_cmd
+            return speech, timeline, order, thought, task_title, camera_cmd, audio_cmd, tool_call
+
         except Exception as e:
             log.warning("OmniRoute Text/Vision Completion error (%s): %s", self.model, e)
             self.last_error = str(e)

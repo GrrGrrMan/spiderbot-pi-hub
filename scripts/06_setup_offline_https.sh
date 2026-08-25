@@ -18,8 +18,10 @@ sudo chmod 644 /etc/ssl/spiderbot/selfsigned.crt
 
 echo "   -> Certificate ready at /etc/ssl/spiderbot/"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 # Re-apply Nginx config and reload
-sudo cp /home/spider/pi-hub/conf/nginx-gateway.conf /etc/nginx/sites-available/spiderbot
+sudo cp "${SCRIPT_DIR}/conf/nginx-gateway.conf" /etc/nginx/sites-available/spiderbot
 sudo nginx -t
 sudo systemctl reload nginx
 

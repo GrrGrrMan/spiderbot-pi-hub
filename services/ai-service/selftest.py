@@ -40,10 +40,23 @@ def main():
         check(len(expanded_wave) > 0 and "joints" in expanded_wave[0][0], "wave keyframes contain joint override dictionary")
 
     # Test Echo Sanitizer regressions
-    from providers.llm import sanitize_speech_echo
+    from providers.llm import sanitize_speech_echo, SKILL_TOOLS
     check(sanitize_speech_echo("Hi there! How are you?", "hi!") == "Hi there! How are you?", "greeting 'hi!' is not stripped")
     check(sanitize_speech_echo("walk forward: On it, moving forward.", "walk forward") == "On it, moving forward.", "colon echo prefix stripped")
     check(sanitize_speech_echo("spin around", "spin around") == "On it!", "exact echo returns fallback reply")
+
+    # Test Native Tool Schemas
+    check(len(SKILL_TOOLS) >= 9, f"native tool schema registry loaded ({len(SKILL_TOOLS)} tools)")
+    tool_names = [t["function"]["name"] for t in SKILL_TOOLS]
+    check("inspect_scene" in tool_names, "active perception tool 'inspect_scene' registered")
+    check("play_music" in tool_names, "media tool 'play_music' registered")
+    check("get_weather" in tool_names, "weather tool 'get_weather' registered")
+
+    # Test Sentence Splitting for Low-Latency TTFA
+    from providers.tts import split_sentences
+    test_text = "I see a green cup on the table! Walking forward to take a closer look. Let me know if you need anything else."
+    splits = split_sentences(test_text)
+    check(len(splits) == 3, f"sentence stream splitter chunked into 3 segments (got {len(splits)})")
 
     print()
     if FAILS:

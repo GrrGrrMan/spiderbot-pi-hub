@@ -67,12 +67,17 @@ class STTClient:
             try:
                 buf = io.BytesIO(wav_bytes)
                 buf.name = "audio.wav"
+                bias_prompt = (
+                    "Hey Spider, Hey Hexapod, Peter Parker. "
+                    "Kinematics: coxa, femur, tibia, coxas, tripod, ripple, gait, "
+                    "alpha, beta, gamma, roll, pitch, yaw, strafe, stance, stand."
+                )
                 try:
                     res = cloud.audio.transcriptions.create(
                         model="whisper-large-v3-turbo",
                         file=buf,
                         language="en",
-                        prompt="Hey Spider, Hey Hexapod.",
+                        prompt=bias_prompt,
                         response_format="text"
                     )
                 except Exception:
@@ -81,7 +86,7 @@ class STTClient:
                         model="whisper-large-v3",
                         file=buf,
                         language="en",
-                        prompt="Hey Spider, Hey Hexapod.",
+                        prompt=bias_prompt,
                         response_format="text"
                     )
                 text = res.strip() if isinstance(res, str) else getattr(res, "text", "").strip()

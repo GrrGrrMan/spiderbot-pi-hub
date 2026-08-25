@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import queue
+import random
 import re
 import sys
 import threading
@@ -30,6 +31,7 @@ from pipeline import Pipeline
 from providers.llm import LLMClient
 from providers.stt import STTClient
 from providers.tts import TTSClient
+from skills.skill_manager import SkillManager
 
 log = logging.getLogger("ai.service")
 
@@ -92,7 +94,13 @@ class AIService:
             storage_path="/opt/hexapod-ai/memory_pool.json",
             mode=os.environ.get("MEMORY_MODE", MemoryMode.SESSION),
         )
-        self.pipeline = Pipeline(self.actions, llm=self.llm, stt=self.stt)
+        self.skills = SkillManager(
+            on_alarm_trigger=lambda track: self._on_audio({"action": "alarm", "payload": track}),
+            on_speak_alert=lambda msg: (self._on_ai_reply(msg), self._on_tts_text(msg)),
+            publish_audio_frame_fn=lambda frame: self._publish(self.topic_audio, frame),
+            fetch_snapshot_fn=self.fetch_camera_snapshot,
+        )
+        self.pipeline = Pipeline(self.actions, llm=self.llm, stt=self.stt, skill_manager=self.skills)
 
         self.embodied_agent = (
             EmbodiedAgent(
@@ -125,75 +133,20 @@ class AIService:
         cam_fps = self.cam_telemetry.get("target_fps", 10)
         is_powered = self.telemetry.get("power", True)
         audio_state = self.telemetry.get("audio", "idle")
+        v_batt = self.telemetry.get("v_batt") or self.telemetry.get("battery_v")
+        batt_str = f"{v_batt:.2f}V" if isinstance(v_batt, (int, float)) else "OK (Nominal)"
+        motion_state = self.telemetry.get("motion_state", "idle")
 
         lines = [
-            "\n### CURRENT HARDWARE PERIPHERAL STATE:",
+            "\n### CURRENT HARDWARE PERIPHERAL & TELEMETRY STATE:",
+            f"- Battery Level: {batt_str}",
+            f"- Kinematics Engine: {motion_state.upper()}",
             f"- Camera Flashlight: {cam_flash}% active",
             f"- Camera Stream Target: {cam_fps} FPS",
             f"- Servo Bus Power: {'ENABLED' if is_powered else 'LIMP / DISABLED'}",
             f"- Audio Subsystem: {audio_state.upper()}",
         ]
         return "\n".join(lines) + "\n"
-        self._http_session = requests.Session() if _HAS_REQUESTS else None
-
-        self.actions = load_actions(args.actions)
-        self.animations = load_animations()
-        self.wake_words = [
-            w.strip().lower() for w in os.environ.get("WAKE_WORDS", "hey spider,hey hexapod,ok spider").split(",") if w.strip()
-        ]
-        self.llm = (
-            LLMClient(
-                base_url=args.llm_base_url,
-                model=args.llm_model,
-                vision_model=args.llm_vision_model,
-                api_key=args.llm_api_key,
-            )
-            if args.llm
-            else None
-        )
-        self.stt = STTClient() if args.stt else None
-        self.tts = (
-            TTSClient(
-                base_url=args.llm_base_url,
-                api_key=args.llm_api_key,
-                model=os.environ.get("TTS_MODEL", "local"),
-            )
-            if args.tts
-            else None
-        )
-        if self.tts:
-            self.tts.warmup()
-
-        self.memory = MemoryManager(
-            storage_path="/opt/hexapod-ai/memory_pool.json",
-            mode=os.environ.get("MEMORY_MODE", MemoryMode.SESSION),
-        )
-        self.pipeline = Pipeline(self.actions, llm=self.llm, stt=self.stt)
-
-        self.embodied_agent = (
-            EmbodiedAgent(
-                llm_client=self.llm,
-                fetch_snapshot_fn=self.fetch_camera_snapshot,
-                publish_s3_cmd_fn=self._on_cmd,
-                publish_cam_cmd_fn=self._on_cam_cmd,
-                speak_fn=self._on_tts_text,
-                reply_fn=self._on_ai_reply,
-                event_fn=self._on_agent_event,
-                directive_fn=self._on_action_directive,
-                abort_event=self.abort_event,
-            )
-            if self.llm
-            else None
-        )
-
-        self.mqtt = None
-        self._work = queue.Queue(maxsize=16)
-        self._busy = False
-        self._running = True
-        self._sender = f"ai-service-{self.device_id}"
-        self._audio_done_event = threading.Event()
-        self._last_msg_text = ""
-        self._last_msg_ts = 0.0
 
     def fetch_camera_snapshot(self) -> Optional[str]:
         """Fetches the latest frame via persistent requests or urllib fallback."""
@@ -352,12 +305,19 @@ class AIService:
             "sender": self._sender,
             "timestamp": int(time.time() * 1000),
         }
+        action_id = ""
         if isinstance(action_payload, dict):
             msg.update(action_payload)
             if "name" in action_payload and "action_id" not in msg:
                 msg["action_id"] = action_payload["name"]
+            action_id = msg.get("action_id", "")
         else:
-            msg["action_id"] = str(action_payload)
+            action_id = str(action_payload)
+            msg["action_id"] = action_id
+
+        if action_id:
+            self.memory.record_action(action_id)
+
         self._publish(self.topic_ai, msg)
 
     def _on_agent_event(self, event_data: dict):
@@ -373,14 +333,30 @@ class AIService:
         if not reply or not self.tts or not self.tts.available():
             return 0.0
         try:
+            from providers.tts import split_sentences
+            sentences = split_sentences(reply)
+            if not sentences:
+                return 0.0
+
             self._audio_done_event.clear()
-            wav = self.tts.synthesize_wav_bytes(reply)
-            duration_s = max(0.2, (len(wav) - 44) / 44100.0)
-            for frame in self.tts.frames(wav):
+            flow_id = random.randint(1, 0xFFFFFFFF)
+            total_duration_s = 0.0
+
+            for sentence in sentences:
                 if self.abort_event.is_set():
                     break
-                self._publish(self.topic_audio, frame)
-            return duration_s
+                wav = self.tts.synthesize_wav_bytes(sentence)
+                if not wav:
+                    continue
+                duration_s = max(0.15, (len(wav) - 44) / 44100.0)
+                total_duration_s += duration_s
+
+                for frame in self.tts.frames(wav, flow_id=flow_id):
+                    if self.abort_event.is_set():
+                        break
+                    self._publish(self.topic_audio, frame)
+
+            return total_duration_s
         except Exception as e:
             log.error("TTS synthesis error: %s", e)
             return 0.0
@@ -393,6 +369,7 @@ class AIService:
 
     def _handle(self, kind, data):
         self.abort_event.clear()
+        self.skills.duck_audio()
 
         if kind == "audio":
             content = data.get("content", "")
@@ -474,36 +451,63 @@ class AIService:
                 self._on_ai_reply("I've committed that to my long-term memory pool.")
                 return
 
-        # 1. Update session buffer, broadcast state to UI, and grab memory pool block
+        # 1. Update session buffer, broadcast state to UI, and grab memory pool, DST & live skills blocks
         self.memory.add_user(text)
         self._broadcast_memory_state()
         session_history = self.memory.get_context_history()
         memory_block = self.memory.get_memory_pool_prompt_block()
+        dst_block = self.memory.get_dst_prompt_block()
+        skills_block = self.skills.get_live_skills_state_block()
 
-        # 2. Grab camera snapshot and live peripheral state for vision & state grounding
-        current_frame = self.fetch_camera_snapshot()
+        # Handle direct timer voice intents locally for zero latency
+        if re.search(r"\b(set|start)\b.*\b(timer|alarm)\b", norm_cmd):
+            sec_match = re.search(r"(\d+)\s*(sec|second|min|minute|hour)", norm_cmd)
+            if sec_match:
+                qty = int(sec_match.group(1))
+                unit = sec_match.group(2)
+                dur = qty * 3600 if "hour" in unit else qty * 60 if "min" in unit else qty
+                res = self.skills.execute_skill("set_timer", {"duration_seconds": dur, "label": "Timer"})
+                msg = f"Timer set for {qty} {unit}s!"
+                self._on_ai_reply(msg)
+                self._on_tts_text(msg)
+                return
+
+        # 2. Active Perception: Pre-fetch frame if visual intent is obvious, or allow dynamic model tool-call via inspect_scene
+        visual_triggers = ("see", "look", "inspect", "camera", "view", "show", "watch", "finger", "fingers", "holding", "color", "who", "what is this", "what do you see", "find", "detect", "read", "check")
+        needs_vision = any(vt in norm_cmd for vt in visual_triggers)
+
+        current_frame = self.fetch_camera_snapshot() if needs_vision else None
         state_block = self.get_live_state_block()
 
-        result = self.pipeline.decide(text, history=session_history, image_b64=current_frame, memory_block=memory_block, state_block=state_block)
+        result = self.pipeline.decide(
+            text, history=session_history, image_b64=current_frame,
+            memory_block=memory_block, state_block=state_block,
+            dst_block=dst_block, skills_block=skills_block
+        )
 
         # 3. Store assistant response into memory
         if result.reply:
             self.memory.add_assistant(result.reply)
             self._broadcast_memory_state()
 
-        self.pipeline.execute(
-            result,
-            embodied_agent=self.embodied_agent,
-            on_cmd=self._on_cmd,
-            on_cam_cmd=self._on_cam_cmd,
-            on_audio=self._on_audio,
-            on_tts_text=self._on_tts_text,
-            on_ai_reply=self._on_ai_reply,
-            on_action_directive=self._on_action_directive,
-            on_agent_event=self._on_agent_event,
-            wait_for_audio_fn=self._wait_for_audio_done,
-            abort_event=self.abort_event,
-        )
+        try:
+            self.pipeline.execute(
+                result,
+                embodied_agent=self.embodied_agent,
+                on_cmd=self._on_cmd,
+                on_cam_cmd=self._on_cam_cmd,
+                on_audio=self._on_audio,
+                on_tts_text=self._on_tts_text,
+                on_ai_reply=self._on_ai_reply,
+                on_action_directive=self._on_action_directive,
+                on_agent_event=self._on_agent_event,
+                wait_for_audio_fn=self._wait_for_audio_done,
+                abort_event=self.abort_event,
+            )
+        finally:
+            # Unduck background music after speech and actions finish
+            time.sleep(0.5)
+            self.skills.unduck_audio()
 
     def _worker_loop(self):
         while self._running:

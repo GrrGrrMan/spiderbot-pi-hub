@@ -44,27 +44,102 @@ def normalize_animation_name(name):
     return aliases.get(n, n)
 
 
-WAKE_PHONETICS = [
-    "hexa", "hexap", "peter parker", "peter", "parker", "peeter", "peater", "peaker"
+# ==============================================================================
+# MODULAR KEYWORD & PHONETIC DICTIONARIES
+# ==============================================================================
+
+# 1. Wake Prefixes
+WAKE_PREFIXES = [
+    "hey", "hi", "hello", "hay", "hai", "ok", "okay", "yo", "sup", "dear"
 ]
-WAKE_PREFIXES = ["hey", "hi", "hello", "hay", "hai"]
+
+# 2. Wake Roots & Phonetic Slur Variants (sorted by token length descending)
+WAKE_PHONETIC_PHRASES = [
+    "peter parker", "spider bot", "spider robot",
+]
+
+WAKE_PHONETIC_WORDS = [
+    # Hexapod acoustic slurs ("Haxaf", "Hexod", "Haxpod", etc.)
+    "hexapod", "hexap", "hexa", "hexaf", "hexav", "hexod", "hex",
+    "haxapod", "haxpod", "haxaf", "haxav", "haxod", "haxa", "hax", "hacks",
+    "huxapod", "huxa", "hux", "hacker",
+]
+
+# 3. Domain & Slang Phonetic Replacements (STT Misrecognitions -> Canonical)
+PHONETIC_CORRECTIONS = {
+    # Clipped speech & Slang (e.g. "posi", "crotch down")
+    r"\bposi\b": "position",
+    r"\bposish\b": "position",
+    r"\bpozition\b": "position",
+    r"\bcrotch\b": "crouch",
+    r"\bboard\b(?=\s+\d+)": "forward",  # "board 30 degrees" -> "forward 30 degrees"
+
+    # Kinematics & Leg anatomy
+    r"\bcoxsat\b": "coxa",
+    r"\bcoxats\b": "coxas",
+    r"\bcocksa\b": "coxa",
+    r"\bcoxa left\b": "coxa left",
+    r"\bcoax\b": "coxa",
+    r"\bfeemur\b": "femur",
+    r"\bfemmer\b": "femur",
+    r"\btibea\b": "tibia",
+    r"\btibeo\b": "tibia",
+
+    # Directional & Movement typos
+    r"\bfoward\b": "forward",
+    r"\bforwrd\b": "forward",
+    r"\bbakward\b": "backward",
+    r"\bbackword\b": "backward",
+
+    # Units
+    r"\bdeg\b": "degrees",
+    r"\bdegs\b": "degrees",
+    r"\bmils\b": "millimeters",
+}
+
+
+def sanitize_robot_phonetics(text: str) -> str:
+    """Standardizes clipped speech, slang, and phonetic STT slips into canonical robotic terms."""
+    if not text:
+        return ""
+    result = text
+    for pattern, replacement in PHONETIC_CORRECTIONS.items():
+        result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
+    return result
 
 
 def extract_wake_command(text: str) -> tuple[Optional[str], str]:
     """
-    Scans transcript, discards chatter before the wake word,
-    and returns (status, extracted_command).
-    status: 'command' | 'standalone' | None
+    Modular wake-word extractor:
+    1. Normalizes phonetic slang ('posi' -> 'position', 'coxsat' -> 'coxa').
+    2. Strips leading conversational prefixes ('hey', 'okay').
+    3. Matches multi-word and single-word wake roots with phonetic tolerance ('haxaf', 'peter parker').
+    4. Returns ('command', 'sanitized command text') | ('standalone', '') | (None, '').
     """
     if not text:
         return None, ""
 
-    cleaned = re.sub(r"[^\w\s]", " ", text.lower())
+    sanitized = sanitize_robot_phonetics(text)
+    cleaned = re.sub(r"[^\w\s]", " ", sanitized.lower())
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
+    if not cleaned:
+        return None, ""
+
+    # Phase A: Check multi-word wake phrases first
+    for phrase in WAKE_PHONETIC_PHRASES:
+        pattern = rf"^(?:{'|'.join(WAKE_PREFIXES)}\s+)?{re.escape(phrase)}\b\s*"
+        match = re.search(pattern, cleaned)
+        if match:
+            cmd = cleaned[match.end():].strip()
+            return ("command", cmd) if cmd else ("standalone", "")
+
+    # Phase B: Token scan for single-word wake roots
     words = cleaned.split()
     wake_idx = -1
 
     for i, word in enumerate(words):
-        if word in WAKE_PHONETICS:
+        if word in WAKE_PHONETIC_WORDS:
             wake_idx = i + 1
             break
 
@@ -118,6 +193,61 @@ def llm_tool_schema(actions):
                 "required": ["action_id"],
             },
         },
+    }
+
+
+def compile_dynamic_joint_sequence(joints_dict: Dict[str, Any], dur_ms: int = 2500, auto_balance: bool = False) -> Dict[str, Any]:
+    """Dynamically compiles arbitrary leg/joint angles into a safe 3-phase keyframe trajectory."""
+    lifted_legs = [leg.lower() for leg, j in joints_dict.items() if isinstance(j, dict) and float(j.get("beta", 0)) > 20]
+
+    tz, rx, ry = 0.0, 0.0, 0.0
+    if auto_balance and len(lifted_legs) > 0:
+        front_lifted = sum(1 for leg in lifted_legs if leg.endswith("f"))
+        rear_lifted = sum(1 for leg in lifted_legs if leg.endswith("r"))
+        right_lifted = sum(1 for leg in lifted_legs if leg.startswith("r"))
+        left_lifted = sum(1 for leg in lifted_legs if leg.startswith("l"))
+
+        if front_lifted > rear_lifted:
+            rx = -10.0 * min(2, front_lifted - rear_lifted)
+            tz = -10.0 * min(2, front_lifted - rear_lifted)
+        elif rear_lifted > front_lifted:
+            rx = 10.0 * min(2, rear_lifted - front_lifted)
+            tz = -10.0 * min(2, rear_lifted - front_lifted)
+
+        if right_lifted > left_lifted:
+            ry = -8.0 * min(2, right_lifted - left_lifted)
+        elif left_lifted > right_lifted:
+            ry = 8.0 * min(2, left_lifted - right_lifted)
+
+    sanitized_joints = {}
+    neutral_joints = {}
+    for leg, jdict in joints_dict.items():
+        leg_key = leg.lower().strip()
+        if leg_key not in ("rf", "rm", "rr", "lf", "lm", "lr") or not isinstance(jdict, dict):
+            continue
+        sanitized_joints[leg_key] = {
+            "alpha": max(-40.0, min(40.0, float(jdict.get("alpha", 0)))),
+            "beta": max(-20.0, min(65.0, float(jdict.get("beta", 0)))),
+            "gamma": max(-65.0, min(20.0, float(jdict.get("gamma", 0)))),
+        }
+        neutral_joints[leg_key] = {"alpha": 0, "beta": 0, "gamma": 0}
+
+    dur_ms = max(400, min(10000, dur_ms))
+    # Smooth transition to target joint stance, then hold posture permanently
+    transition_ms = min(800, int(dur_ms * 0.6))
+    hold_ms = max(200, dur_ms - transition_ms)
+
+    keyframes = [
+        {"duration_ms": 40, "easing": "easeInOutCubic", "tz": tz * 0.2, "rx": rx * 0.2, "ry": ry * 0.2},
+        {"duration_ms": transition_ms, "easing": "easeInOutCubic", "tz": tz, "rx": rx, "ry": ry, "joints": sanitized_joints},
+        {"duration_ms": hold_ms, "easing": "linear", "tz": tz, "rx": rx, "ry": ry, "joints": sanitized_joints},
+    ]
+
+    return {
+        "type": "sequence",
+        "name": "dynamic_joint_motion",
+        "duration_ms": dur_ms,
+        "keyframes": keyframes,
     }
 
 
