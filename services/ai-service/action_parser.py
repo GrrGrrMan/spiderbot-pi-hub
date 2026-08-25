@@ -62,7 +62,7 @@ WAKE_PHONETIC_WORDS = [
     # Hexapod acoustic slurs ("Haxaf", "Hexod", "Haxpod", etc.)
     "hexapod", "hexap", "hexa", "hexaf", "hexav", "hexod", "hex",
     "haxapod", "haxpod", "haxaf", "haxav", "haxod", "haxa", "hax", "hacks",
-    "huxapod", "huxa", "hux", "hacker",
+    "huxapod", "huxa", "hux", "hacker", "Hetsa"
 ]
 
 # 3. Domain & Slang Phonetic Replacements (STT Misrecognitions -> Canonical)
@@ -225,12 +225,19 @@ def compile_dynamic_joint_sequence(joints_dict: Dict[str, Any], dur_ms: int = 25
         leg_key = leg.lower().strip()
         if leg_key not in ("rf", "rm", "rr", "lf", "lm", "lr") or not isinstance(jdict, dict):
             continue
-        sanitized_joints[leg_key] = {
-            "alpha": max(-40.0, min(40.0, float(jdict.get("alpha", 0)))),
-            "beta": max(-20.0, min(65.0, float(jdict.get("beta", 0)))),
-            "gamma": max(-65.0, min(20.0, float(jdict.get("gamma", 0)))),
-        }
-        neutral_joints[leg_key] = {"alpha": 0, "beta": 0, "gamma": 0}
+        
+        # Preserve neutral joint baseline for unspecified angles rather than zeroing out bent knees
+        leg_entry = {}
+        if "alpha" in jdict:
+            leg_entry["alpha"] = max(-40.0, min(40.0, float(jdict["alpha"])))
+        if "beta" in jdict:
+            leg_entry["beta"] = max(-20.0, min(65.0, float(jdict["beta"])))
+        if "gamma" in jdict:
+            leg_entry["gamma"] = max(-65.0, min(20.0, float(jdict["gamma"])))
+            
+        if leg_entry:
+            sanitized_joints[leg_key] = leg_entry
+        neutral_joints[leg_key] = {"alpha": 0, "beta": 0, "gamma": -45}
 
     dur_ms = max(400, min(10000, dur_ms))
     # Smooth transition to target joint stance, then hold posture permanently

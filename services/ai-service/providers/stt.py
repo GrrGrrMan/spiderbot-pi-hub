@@ -100,10 +100,14 @@ class STTClient:
         local = self._ensure_local()
         if local:
             try:
-                with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
-                    raw = wf.readframes(wf.getnframes())
-                    import numpy as np
-                    samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+                import numpy as np
+                # Check for standard RIFF WAV header, otherwise treat as raw 16kHz 16-bit mono PCM
+                if wav_bytes.startswith(b"RIFF") and len(wav_bytes) > 44:
+                    with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+                        raw = wf.readframes(wf.getnframes())
+                else:
+                    raw = wav_bytes
+                samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
                 segments, _ = local.transcribe(samples, beam_size=3)
                 text = "".join(s.text for s in segments).strip()
                 log.info("Local STT -> %r", text)

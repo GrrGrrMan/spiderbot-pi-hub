@@ -35,12 +35,13 @@ DEFAULT_FALLBACK_MODELS = [
 
 
 def split_sentences(text: str) -> List[str]:
-    """Splits conversational text into spoken sentence boundaries for low-latency incremental playback."""
+    """Splits conversational text into spoken sentence boundaries for low-latency incremental playback,
+    safeguarding decimal numbers, units, and abbreviations."""
     cleaned = (text or "").strip()
     if not cleaned:
         return []
-    # Match sentence terminators (. ! ?) followed by whitespace or linebreaks
-    raw_splits = re.split(r"(?<=[.!?])\s+", cleaned)
+    # Match sentence terminators (. ! ?) that are not part of decimals or abbreviations
+    raw_splits = re.split(r"(?<=[.!?])(?<!\b\d\.\d)(?<!\b[A-Za-z]\.)\s+", cleaned)
     chunks = [s.strip() for s in raw_splits if s.strip()]
     return chunks if chunks else [cleaned]
 

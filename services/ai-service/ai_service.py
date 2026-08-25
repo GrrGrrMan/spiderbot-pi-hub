@@ -113,6 +113,8 @@ class AIService:
                 event_fn=self._on_agent_event,
                 directive_fn=self._on_action_directive,
                 abort_event=self.abort_event,
+                publish_audio_fn=self._on_audio,
+                skill_manager=self.skills,
             )
             if self.llm
             else None
@@ -287,6 +289,10 @@ class AIService:
     def _on_ai_reply(self, reply):
         if not reply:
             return
+        # Ground spoken assistant turn into persistent memory context
+        self.memory.add_assistant(reply)
+        self._broadcast_memory_state()
+
         msg = {
             "type": "text",
             "role": "assistant",

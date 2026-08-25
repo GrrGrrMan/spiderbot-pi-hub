@@ -25,12 +25,12 @@ else
     echo "   -> Hotspot connection '${HOTSPOT_SSID}' already exists."
 fi
 
-# 3. Configure NAT Masquerading (Uplink to WAN/Home Wi-Fi)
-WAN_IFACE=$(ip route | grep default | awk '{print $5}' | head -n1 || echo "eth0")
-echo "   -> Routing Hotspot traffic out through WAN interface: ${WAN_IFACE}"
+# 3. Configure Dynamic Subnet NAT Masquerading (Uplink Agnostic)
+echo "   -> Configuring dynamic outbound NAT masquerading for Hotspot subnet (192.168.4.0/24)..."
 
-sudo iptables -t nat -C POSTROUTING -o "${WAN_IFACE}" -j MASQUERADE 2>/dev/null || \
-sudo iptables -t nat -A POSTROUTING -o "${WAN_IFACE}" -j MASQUERADE
+sudo iptables -t nat -C POSTROUTING -s 192.168.4.0/24 ! -d 192.168.4.0/24 -j MASQUERADE 2>/dev/null || \
+sudo iptables -t nat -A POSTROUTING -s 192.168.4.0/24 ! -d 192.168.4.0/24 -j MASQUERADE
+
 sudo iptables -C FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
 sudo iptables -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 sudo iptables -C FORWARD -s 192.168.4.0/24 -j ACCEPT 2>/dev/null || \

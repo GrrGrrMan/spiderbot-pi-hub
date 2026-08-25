@@ -74,6 +74,8 @@ class EmbodiedAgent:
         event_fn: Optional[Callable[[Dict[str, Any]], None]] = None,
         directive_fn: Optional[Callable[[Any], None]] = None,
         abort_event: Optional[threading.Event] = None,
+        publish_audio_fn: Optional[Callable[[Dict[str, Any]], None]] = None,
+        skill_manager: Optional[Any] = None,
     ):
         self.llm = llm_client
         self.fetch_snapshot = fetch_snapshot_fn
@@ -84,6 +86,8 @@ class EmbodiedAgent:
         self.event = event_fn
         self.directive = directive_fn
         self.abort_event = abort_event or threading.Event()
+        self.publish_audio = publish_audio_fn
+        self.skill_manager = skill_manager
         self.animations = load_animations()
 
     def abort(self):
@@ -237,7 +241,7 @@ Decompose this into a chronological JSON execution plan:
       "gesture": "Name from {valid_gestures} if type is gesture",
       "camera_cmd": {{ "preset": "night_vision|inspection|default", "flash": 80, "special_effect": 0 }},
       "text": "Text to speak if type is speak",
-      "audio_track": "Track or alarm name if type is audio",
+      "audio_track": "Track, song, or sound effect to play",
       "vx": 45,
       "omega": 0,
       "duration_s": 2.5
@@ -252,7 +256,7 @@ RULES:
 - 'walk', 'walk forward': type='walk_forward', vx=45, omega=0, duration_s=2.5
 - 'dance', 'wiggle': type='gesture', gesture='dance'
 - 'wave': type='gesture', gesture='wave'
-- 'baby shark': type='audio', audio_track='baby_shark'
+- 'play music / rain sounds': type='audio', audio_track='calm rain sounds'
 """
         plan = initial_plan
         if not plan:
@@ -287,12 +291,10 @@ RULES:
                 steps = raw_steps
 
         def format_step_label(step_obj: dict, i: int) -> str:
-            # 1. Use explicit description if provided and not generic
             desc_val = str(step_obj.get("desc") or "").strip()
             if desc_val and not re.match(r"^step\s*\d+$", desc_val, re.IGNORECASE):
                 return desc_val
 
-            # 2. Extract kinematics and parameters
             p = step_obj.get("params") or {}
             raw_id = str(step_obj.get("id") or step_obj.get("action") or step_obj.get("type") or "").lower()
             dur_s = p.get("duration_s") or step_obj.get("duration_s") or (
@@ -398,7 +400,6 @@ RULES:
 
             dur = float(p.get("duration_s", step.get("duration_s", (p.get("duration_ms", step.get("duration_ms", 2500)) / 1000.0))))
 
-            # Extract kinematic parameters with fallbacks from both p and step
             vx = float(p.get("vx", step.get("vx", 0.0)))
             vy = float(p.get("vy", step.get("vy", 0.0)))
             omega = float(p.get("omega", step.get("omega", 0.0)))
@@ -469,12 +470,21 @@ RULES:
                     self.reply(speak_text)
                     tts_dur = self.speak(speak_text) or 0.0
                     self._sleep_interruptible(max(0.5, tts_dur + 0.3))
-            elif stype in ("audio", "sound"):
-                track = str(p.get("track") or step.get("audio_track") or step.get("track") or "curious")
+            elif stype in ("audio", "sound", "music"):
+                track = str(p.get("track") or step.get("audio_track") or step.get("track") or step.get("query") or "curious")
                 if track in ("curious", "startle", "idle"):
-                    self.publish_s3_cmd({"type": "audio", "action": "alarm", "payload": track})
+                    if self.publish_audio:
+                        self.publish_audio({"action": "alarm", "payload": track})
+                    else:
+                        self.publish_s3_cmd({"type": "audio", "action": "alarm", "payload": track})
+                elif track in ("beep", "beep_once"):
+                    if self.publish_audio:
+                        self.publish_audio({"action": "beep"})
                 else:
-                    self.publish_s3_cmd({"type": "audio", "action": "play", "query": track})
+                    if self.skill_manager:
+                        self.skill_manager.execute_skill("play_music", {"query": track})
+                    elif self.publish_audio:
+                        self.publish_audio({"action": "play", "query": track})
             elif stype in ("pause", "wait"):
                 self._sleep_interruptible(dur)
             else:
@@ -515,7 +525,6 @@ RULES:
                     "steps": ui_steps,
                 })
 
-            # Settle-Before-Acquire: Zero velocity and settle for 150ms to eliminate camera shake
             self._stop_motion()
             time.sleep(0.15)
             img_b64 = self.fetch_snapshot()
@@ -546,7 +555,6 @@ Inspect image and return JSON:
             if chosen_gesture and chosen_gesture != "none":
                 self._execute_gesture(chosen_gesture)
         else:
-            # Pure motion/gesture completion
             if completion_speech and not self.abort_event.is_set():
                 self.reply(completion_speech)
 
@@ -565,7 +573,6 @@ Inspect image and return JSON:
         if self.event:
             self.event({"stage": "thinking", "thought": f"Stabilizing view for: '{task_title}'"})
 
-        # Settle-Before-Acquire
         self._stop_motion()
         time.sleep(0.15)
         img_b64 = self.fetch_snapshot()

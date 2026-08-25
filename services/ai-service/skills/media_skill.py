@@ -9,6 +9,12 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 import numpy as np
 
+try:
+    import yt_dlp
+    _HAS_YTDLP = True
+except ImportError:
+    _HAS_YTDLP = False
+
 log = logging.getLogger("ai.skills.media")
 
 MEDIA_ROOT = "/opt/hexapod-ai/media"
@@ -43,7 +49,7 @@ class MediaSkill:
         for path in (MUSIC_DIR, SFX_DIR):
             os.makedirs(path, exist_ok=True)
 
-    def _resolve_source_url(self, query: str) -> tuple[str, str, str]:
+    def _resolve_source_url(self, query: str) -> tuple[Optional[str], str, str]:
         clean_q = query.strip()
         local_music = os.path.join(MUSIC_DIR, clean_q if clean_q.endswith((".mp3", ".wav", ".flac", ".ogg")) else f"{clean_q}.mp3")
         local_sfx = os.path.join(SFX_DIR, clean_q if clean_q.endswith((".mp3", ".wav", ".flac", ".ogg")) else f"{clean_q}.wav")
@@ -56,25 +62,55 @@ class MediaSkill:
         if clean_q.startswith(("http://", "https://")):
             return clean_q, clean_q, "web"
 
+        # 1. In-process Python yt_dlp extraction
+        if _HAS_YTDLP:
+            ydl_opts = {
+                "format": "bestaudio/best",
+                "noplaylist": True,
+                "quiet": True,
+                "no_warnings": True,
+                "default_search": "ytsearch1",
+                "extract_flat": False,
+                "ignoreerrors": False,
+            }
+            try:
+                search_target = clean_q if clean_q.startswith("ytsearch") else f"ytsearch1:{clean_q}"
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(search_target, download=False)
+                    if info:
+                        if "entries" in info and info["entries"]:
+                            entry = info["entries"][0]
+                            if entry and "url" in entry:
+                                return entry["url"], entry.get("title", clean_q), "stream"
+                        elif "url" in info:
+                            return info["url"], info.get("title", clean_q), "stream"
+            except Exception as e:
+                log.warning("yt-dlp Python extraction error for '%s': %s", clean_q, e)
+
+        # 2. Subprocess fallback
         try:
             yt_cmd = [
                 "yt-dlp",
                 "--default-search", "ytsearch1",
-                "--get-url",
-                "--get-title",
+                "--print", "%(title)s",
+                "--print", "%(url)s",
                 "--format", "bestaudio/best",
+                "--no-playlist",
                 clean_q,
             ]
             res = subprocess.run(yt_cmd, capture_output=True, text=True, timeout=12.0)
-            lines = [line.strip() for line in res.stdout.strip().split("\n") if line.strip()]
-            if len(lines) >= 2:
-                return lines[1], lines[0], "stream"
-            if len(lines) == 1:
-                return lines[0], f"Search: {clean_q}", "stream"
+            if res.returncode == 0:
+                lines = [line.strip() for line in res.stdout.strip().split("\n") if line.strip()]
+                if len(lines) >= 2:
+                    return lines[1], lines[0], "stream"
+                if len(lines) == 1 and lines[0].startswith(("http://", "https://")):
+                    return lines[0], f"Search: {clean_q}", "stream"
+            else:
+                log.warning("yt-dlp CLI returned exit code %d: %s", res.returncode, res.stderr.strip())
         except Exception as e:
-            log.warning("yt-dlp resolution error for '%s': %s", clean_q, e)
+            log.warning("yt-dlp CLI resolution error for '%s': %s", clean_q, e)
 
-        return clean_q, clean_q, "stream"
+        return None, clean_q, "not_found"
 
     def _stream_worker(self, source_url: str, flow_id: int):
         cmd = [
@@ -82,6 +118,9 @@ class MediaSkill:
             "-nostdin",
             "-hide_banner",
             "-loglevel", "error",
+            "-reconnect", "1",
+            "-reconnect_streamed", "1",
+            "-reconnect_delay_max", "5",
             "-i", source_url,
             "-f", "s16le",
             "-acodec", "pcm_s16le",
@@ -91,18 +130,22 @@ class MediaSkill:
         ]
 
         try:
-            self._ffmpeg_proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                bufsize=4096,
-            )
+            with self._lock:
+                self._ffmpeg_proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    bufsize=4096,
+                )
         except Exception as e:
             log.error("Failed to launch ffmpeg audio transcode: %s", e)
             return
 
         seq = 0
         chunk_size = 4096
+        sample_rate = 22050
+        start_time = time.monotonic()
+        total_samples_sent = 0
 
         try:
             while not self._stop_stream_event.is_set():
@@ -110,7 +153,12 @@ class MediaSkill:
                 if self._stop_stream_event.is_set():
                     break
 
-                raw_bytes = self._ffmpeg_proc.stdout.read(chunk_size)
+                with self._lock:
+                    proc = self._ffmpeg_proc
+                if not proc or not proc.stdout:
+                    break
+
+                raw_bytes = proc.stdout.read(chunk_size)
                 if not raw_bytes:
                     break
 
@@ -136,18 +184,32 @@ class MediaSkill:
                     self.publish_frame_fn(frame)
 
                 seq += 1
-                time.sleep(len(payload_bytes) / 44100.0)
+                total_samples_sent += len(payload_bytes) // 2
+
+                # Monotonic clock accumulator pacing to eliminate OS scheduler sleep drift
+                expected_elapsed = total_samples_sent / sample_rate
+                actual_elapsed = time.monotonic() - start_time
+                sleep_needed = expected_elapsed - actual_elapsed
+                if sleep_needed > 0.001:
+                    time.sleep(sleep_needed)
 
         except Exception as e:
             log.warning("Audio streaming worker encountered exception: %s", e)
         finally:
-            if self._ffmpeg_proc:
-                try:
-                    self._ffmpeg_proc.terminate()
-                    self._ffmpeg_proc.wait(timeout=1.0)
-                except Exception:
-                    self._ffmpeg_proc.kill()
-                self._ffmpeg_proc = None
+            with self._lock:
+                if self._ffmpeg_proc:
+                    try:
+                        _, errs = self._ffmpeg_proc.communicate(timeout=0.5)
+                        if errs:
+                            log.debug("FFmpeg stderr: %s", errs.decode("utf-8", errors="ignore").strip())
+                    except Exception:
+                        pass
+                    try:
+                        self._ffmpeg_proc.terminate()
+                        self._ffmpeg_proc.wait(timeout=1.0)
+                    except Exception:
+                        self._ffmpeg_proc.kill()
+                    self._ffmpeg_proc = None
             log.info("Media streaming worker stopped (Flow: %d)", flow_id)
 
     def play(self, query: str) -> Dict[str, Any]:
@@ -158,6 +220,10 @@ class MediaSkill:
         self.stop()
 
         source_url, track_name, source_type = self._resolve_source_url(clean_q)
+        if not source_url:
+            log.warning("Could not resolve media stream for query: '%s'", clean_q)
+            return {"status": "error", "message": f"Could not find or stream audio for '{clean_q}'"}
+
         self.current_track_title = track_name
         self._stop_stream_event.clear()
         self._pause_event.set()

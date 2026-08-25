@@ -33,6 +33,11 @@ if ! command -v omniroute >/dev/null 2>&1; then
     fi
 fi
 
+# Ensure binary is symlinked to /usr/local/bin/omniroute for systemd unit consistency
+if command -v omniroute >/dev/null 2>&1; then
+    sudo ln -sf "$(command -v omniroute)" /usr/local/bin/omniroute
+fi
+
 # 4. Install & Enable Systemd Unit
 if [ -f "$SERVICE_SRC" ]; then
     sudo cp "$SERVICE_SRC" /etc/systemd/system/omniroute.service

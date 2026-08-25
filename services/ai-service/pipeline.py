@@ -18,6 +18,7 @@ log = logging.getLogger("ai.pipeline")
 
 CANNED_UNKNOWN = "I didn't catch that command — try saying 'walk forward' or select an action."
 
+
 class PipelineResult:
     def __init__(
         self,
@@ -40,9 +41,6 @@ class PipelineResult:
         self.task_title = task_title
         self.camera_cmd = camera_cmd
         self.audio_cmd = audio_cmd
-
-
-import json
 
 
 class Pipeline:
@@ -84,14 +82,12 @@ class Pipeline:
                     skill_executor=skill_fn
                 )
 
-                # Fallback support for prompt-emulated tool calls if model returned JSON tool_call
                 if tool_call and skill_fn:
                     tool_name = tool_call.get("name", "")
                     tool_args = tool_call.get("args", {})
                     log.info("Executing Fallback Emulated Tool -> %s with args: %s", tool_name, tool_args)
                     skill_fn(tool_name, tool_args)
 
-                # Check if this requires multi-step compound graph execution
                 is_compound = len(timeline) > 1 or any(
                     s.get("type") in ("perception", "condition", "tool") or "if" in s for s in timeline
                 )
@@ -140,29 +136,12 @@ class Pipeline:
         reply = result.reply or ""
         task_title = result.task_title or "Task"
 
-        # 1. Multi-Step Compound Graph Path
-        if result.mode == "compound" and embodied_agent:
-            if order == "tts_first" and reply and not abort.is_set():
-                on_ai_reply(reply)
-                tts_dur = on_tts_text(reply) or 0.0
-                if wait_for_audio_fn:
-                    wait_for_audio_fn(tts_dur + 0.5)
-
-            embodied_agent.run_procedural_task(result.goal_text, initial_plan={
-                "task_title": task_title,
-                "steps": timeline,
-                "completion_speech": "" if order == "tts_first" else reply,
-            })
-            return
-
-        # 2. Hardware Camera Tuning & Presets
+        # Hardware Camera Tuning & Presets
         if result.camera_cmd and on_cam_cmd:
             cam_payload: Dict[str, Any] = {"type": "camera"}
             c = result.camera_cmd
-
             if "preset" in c and c["preset"]:
                 cam_payload["preset"] = str(c["preset"]).strip().lower()
-
             if "flash" in c or "lamp" in c or "led" in c:
                 val = c.get("flash", c.get("lamp", c.get("led", 0)))
                 try:
@@ -219,19 +198,15 @@ class Pipeline:
 
             on_cam_cmd(cam_payload)
 
-        # 3. Master Audio, Presets & Expressive Sounds
+        # Master Audio & Presets
         if result.audio_cmd and on_audio:
             a = result.audio_cmd
-
-            # Master Hardware Volume scaling
             if "volume" in a:
                 try:
                     vol = max(0.0, min(1.0, float(a["volume"])))
                     on_audio({"action": "volume", "volume": vol})
                 except (ValueError, TypeError):
                     pass
-
-            # Audio Presets
             if "preset" in a and a["preset"]:
                 p_name = str(a["preset"]).strip().lower()
                 if p_name in ("stealth", "mute", "quiet"):
@@ -240,13 +215,34 @@ class Pipeline:
                     on_audio({"action": "volume", "volume": 0.85})
                 elif p_name in ("normal", "default"):
                     on_audio({"action": "volume", "volume": 0.35})
-
             if "action" in a:
                 on_audio(a)
             elif "alarm" in a:
                 on_audio({"action": "alarm", "payload": str(a["alarm"])})
             elif "beep" in a:
                 on_audio({"action": "beep"})
+
+        # Pure conversational response or tool execution without motion steps
+        if not timeline:
+            if reply and not abort.is_set():
+                on_ai_reply(reply)
+                on_tts_text(reply)
+            return
+
+        # 1. Unified Embodied Agent Execution (Handles Standard & Compound Physical Tasks)
+        if embodied_agent:
+            if order == "tts_first" and reply and not abort.is_set():
+                on_ai_reply(reply)
+                tts_dur = on_tts_text(reply) or 0.0
+                if wait_for_audio_fn:
+                    wait_for_audio_fn(tts_dur + 0.5)
+
+            embodied_agent.run_procedural_task(result.goal_text, initial_plan={
+                "task_title": task_title,
+                "steps": timeline,
+                "completion_speech": "" if order == "tts_first" else reply,
+            })
+            return
 
         if on_agent_event and result.thought:
             on_agent_event({
@@ -283,7 +279,6 @@ class Pipeline:
                 params = step.get("params") or {}
                 anim_key = normalize_animation_name(act_id)
 
-                # Keyframe Animation Sequences
                 if stype in ("gesture", "sequence") or (anim_key in self.animations):
                     target_anim = anim_key or act_id
                     if target_anim in self.animations:
@@ -296,7 +291,6 @@ class Pipeline:
                         time.sleep(total_ms / 1000.0)
                         continue
 
-                # Generalized Dynamic Joint / Leg Overrides
                 if stype in ("joints", "joint_override") or "joints" in params or "joints" in step:
                     raw_joints = params.get("joints") or step.get("joints") or {}
                     seq_payload = compile_dynamic_joint_sequence(raw_joints, dur_ms=dur_ms, auto_balance=params.get("auto_balance", False))
@@ -306,19 +300,20 @@ class Pipeline:
                     time.sleep(seq_payload["duration_ms"] / 1000.0)
                     continue
 
-                # Action Preset Fallback (Bypass if the LLM provided custom kinematics)
                 has_kinematics = stype in ("pose", "gait") or any(k in params for k in ("pos_z", "pos_x", "pos_y", "roll", "pitch", "yaw", "vx", "vy", "omega"))
                 act = action_by_id(self.actions, act_id)
                 
                 if not has_kinematics and act and act.get("topic") in ("audio", "cmd") and act.get("payload", {}).get("type") != "motion":
-                    on_cmd(act["payload"])
+                    if act.get("topic") == "audio":
+                        on_audio(act["payload"])
+                    else:
+                        on_cmd(act["payload"])
                     if on_action_directive:
                         on_action_directive(act["payload"])
                     if dur_ms > 0:
                         time.sleep(dur_ms / 1000.0)
                     continue
 
-                # Kinematics & Body Pose Execution
                 base_act = action_by_id(self.actions, act_id)
                 resolved_id = act_id
                 resolved_name = act_id.replace("_", " ").title()
@@ -367,7 +362,6 @@ class Pipeline:
                         "roll": 0, "pitch": 0, "yaw": 0,
                     }
 
-                # Extract gait aliases (e.g. "hip_swing" -> "hip_stance", "speed" -> "cycle_time")
                 if "hip_swing" in params and "hip_stance" not in params:
                     params["hip_stance"] = params["hip_swing"]
                 if "swing" in params and "hip_stance" not in params:
@@ -377,7 +371,6 @@ class Pipeline:
                 if "speed" in params and "cycle_time" not in params:
                     params["cycle_time"] = params["speed"]
 
-                # Clamp Kinematics & Gait Parameters to Safe Physical Envelopes
                 for k in ("vx", "vy", "omega", "step_height", "cycle_time", "hip_stance", "leg_stance", "pos_x", "pos_y", "pos_z", "roll", "pitch", "yaw"):
                     if k in params:
                         try:
@@ -418,7 +411,6 @@ class Pipeline:
                 if on_action_directive:
                     on_action_directive(directive_payload)
 
-                # 20 Hz Leased Dispatch Loop with Preemption Check
                 dur_s = run_dur / 1000.0
                 start_t = time.time()
                 while time.time() - start_t < dur_s:
@@ -427,7 +419,6 @@ class Pipeline:
                     on_cmd(payload)
                     time.sleep(0.05)
 
-                # Stop velocity while holding final body stance on physical hardware
                 stop = dict(payload)
                 stop["vx"] = stop["vy"] = stop["omega"] = 0
                 stop["lease_ms"] = 0

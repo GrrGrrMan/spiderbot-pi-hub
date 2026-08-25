@@ -591,16 +591,39 @@ Respond strictly in JSON:
             choice = resp.choices[0]
             msg = choice.message
 
-            # Handle Native Tool Calling Multi-Turn Loop
-            if getattr(msg, "tool_calls", None) and skill_executor:
-                messages.append(msg)
+            # Handle Native Multi-Turn Tool Calling Loop (Up to 4 agentic turns)
+            turn_count = 0
+            MAX_TOOL_TURNS = 4
+
+            while getattr(msg, "tool_calls", None) and skill_executor and turn_count < MAX_TOOL_TURNS:
+                turn_count += 1
+                
+                # Sanitize Assistant Message with Tool Calls into cross-provider compliant dict
+                tool_call_dicts = []
+                for tc in msg.tool_calls:
+                    raw_args = tc.function.arguments
+                    tool_call_dicts.append({
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": raw_args if isinstance(raw_args, str) else json.dumps(raw_args),
+                        },
+                    })
+                
+                messages.append({
+                    "role": "assistant",
+                    "content": msg.content or "",
+                    "tool_calls": tool_call_dicts,
+                })
+
                 for tc in msg.tool_calls:
                     fn_name = tc.function.name
                     try:
                         fn_args = json.loads(tc.function.arguments) if isinstance(tc.function.arguments, str) else (tc.function.arguments or {})
                     except Exception:
                         fn_args = {}
-                    log.info("Native Tool Invocation -> %s(%s)", fn_name, fn_args)
+                    log.info("Native Tool Invocation [Turn %d] -> %s(%s)", turn_count, fn_name, fn_args)
                     res = skill_executor(fn_name, fn_args)
 
                     # Dynamic Visual Grounding: If tool returned base64 image, attach it as multimodal observation
@@ -630,18 +653,17 @@ Respond strictly in JSON:
                 followup_kwargs = {
                     "model": self.model,
                     "messages": messages,
-                    "response_format": {"type": "json_object"},
+                    "tools": SKILL_TOOLS if turn_count < MAX_TOOL_TURNS - 1 else None,
+                    "tool_choice": "auto" if turn_count < MAX_TOOL_TURNS - 1 else None,
                     "temperature": self.temperature,
                     "max_tokens": self.max_tokens,
                 }
                 if budget > 0 and self.thinking_level in ("low", "medium", "high"):
                     followup_kwargs["reasoning_effort"] = self.thinking_level
 
-                final_resp = client.chat.completions.create(**followup_kwargs)
-                raw_reply = final_resp.choices[0].message.content or ""
-                speech, timeline, order, thought, task_title, camera_cmd, audio_cmd, _ = parse_json_response(raw_reply, user_prompt=text)
-                self.status = "online"
-                return speech, timeline, order, thought, task_title, camera_cmd, audio_cmd, None
+                followup_kwargs = {k: v for k, v in followup_kwargs.items() if v is not None}
+                followup_resp = client.chat.completions.create(**followup_kwargs)
+                msg = followup_resp.choices[0].message
 
             raw_reply = msg.content or ""
             speech, timeline, order, thought, task_title, camera_cmd, audio_cmd, tool_call = parse_json_response(raw_reply, user_prompt=text)

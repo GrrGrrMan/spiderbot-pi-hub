@@ -1,0 +1,69 @@
+# ==============================================================================
+# 1. PI GUIDE
+# ==============================================================================
+
+# A. Push entire workspace to a brand new Raspberry Pi
+cd D:\Projects\hexapod-workspaces\V2\pi-hub
+ssh spider@spider-w.local "mkdir -p ~/pi-hub"
+scp -r * spider@spider-w.local:~/pi-hub/
+
+# B. Run Turnkey Layer 1 -> Layer 6 Installers in sequence
+ssh -t spider@spider-w.local "cd ~/pi-hub && \
+  sudo bash scripts/01_setup_network.sh && \
+  sudo bash scripts/02_setup_broker.sh && \
+  sudo bash scripts/03_setup_gateway.sh && \
+  sudo bash scripts/04_setup_omniroute.sh && \
+  sudo bash services/cam-relay/deploy/install-cam-relay.sh && \
+  sudo bash services/ai-service/deploy/install-ai-service.sh"
+
+# C. Verify all 5 daemons are green
+ssh spider@spider-w.local "python3 ~/pi-hub/scripts/pi-status.py"
+
+
+# ==============================================================================
+# 2. QUICK SERVICE DEPLOYS (INCREMENTAL UPDATES / EXISTING SETUP)
+# ==============================================================================
+
+# A. QUICK AI SERVICE UPDATE (Prompts, Actions, Animations, Pipeline, Providers, Skills)
+cd D:\Projects\hexapod-workspaces\V2\pi-hub
+ssh spider@spider-w.local "mkdir -p /tmp/ai-service-staging"
+scp -r services/ai-service/* conf/ai.env spider@spider-w.local:/tmp/ai-service-staging/
+ssh -t spider@spider-w.local "sudo cp -r /tmp/ai-service-staging/providers /tmp/ai-service-staging/skills /tmp/ai-service-staging/*.py /tmp/ai-service-staging/*.json /opt/hexapod-ai/ && sudo cp /tmp/ai-service-staging/ai.env /etc/hexapod-ai/ai.env && sudo chown -R spider:spider /opt/hexapod-ai && sudo systemctl restart hexapod-ai && sudo journalctl -u hexapod-ai -f -n 25"
+
+# B. QUICK OMNIROUTE CONFIG UPDATE (Gateway API keys, upstream models, port 20128)
+cd D:\Projects\hexapod-workspaces\V2\pi-hub
+scp conf/omniroute.env spider@spider-w.local:/tmp/
+ssh -t spider@spider-w.local "sudo cp /tmp/omniroute.env /etc/omniroute/omniroute.env && sudo systemctl restart omniroute && sudo journalctl -u omniroute -f -n 20"
+
+# C. QUICK CAMERA RELAY UPDATE (1-to-N fanout, fast snapshot buffer, MQTT discovery)
+cd D:\Projects\hexapod-workspaces\V2\pi-hub
+scp services/cam-relay/cam_relay.py conf/cam_relay.env spider@spider-w.local:/tmp/
+ssh -t spider@spider-w.local "sudo cp /tmp/cam_relay.py /opt/hexapod-cam-relay/ && sudo cp /tmp/cam_relay.env /etc/hexapod-cam-relay/ && sudo systemctl restart hexapod-cam-relay && sudo journalctl -u hexapod-cam-relay -f -n 20"
+
+# D. QUICK DIAGNOSTIC SCRIPT UPDATE
+cd D:\Projects\hexapod-workspaces\V2\pi-hub
+scp scripts/pi-status.py spider@spider-w.local:~/pi-hub/scripts/
+ssh spider@spider-w.local "chmod +x ~/pi-hub/scripts/pi-status.py"
+
+# E. QUICK NGINX GATEWAY UPDATE (Reverse proxy, CORS, WebSocket paths)
+cd D:\Projects\hexapod-workspaces\V2\pi-hub
+scp conf/nginx-gateway.conf spider@spider-w.local:/tmp/
+ssh -t spider@spider-w.local "sudo cp /tmp/nginx-gateway.conf /etc/nginx/sites-available/spiderbot && sudo nginx -t && sudo systemctl reload nginx"
+
+# F. QUICK NETWORK GATEWAY & NAT UPDATE
+cd D:\Projects\hexapod-workspaces\V2\pi-hub
+scp scripts/01_setup_network.sh scripts/05_setup_tailscale_https.sh spider@spider-w.local:~/pi-hub/scripts/
+ssh -t spider@spider-w.local "sudo iptables -t nat -C POSTROUTING -s 192.168.4.0/24 ! -d 192.168.4.0/24 -j MASQUERADE 2>/dev/null || sudo iptables -t nat -A POSTROUTING -s 192.168.4.0/24 ! -d 192.168.4.0/24 -j MASQUERADE && sudo netfilter-persistent save && sudo tailscale serve --reset 2>/dev/null || true"
+
+# G. RESTART ALL ROBOT SERVICES AT ONCE (Full stack reload)
+ssh -t spider@spider-w.local "sudo systemctl restart omniroute hexapod-ai hexapod-cam-relay nginx mosquitto"
+
+
+# ==============================================================================
+# 3. WEB UI FRONTEND DEPLOY
+# ==============================================================================
+
+cd D:\Projects\hexapod-workspaces\V2\web-ui
+npm run build
+scp -r build/* spider@spider-w.local:/home/spider/v2-web-ui/build/
+ssh spider@spider-w.local "sudo chmod -R

@@ -186,8 +186,10 @@ class MemoryManager:
     def _save_to_disk(self):
         try:
             os.makedirs(os.path.dirname(self.storage_path), exist_ok=True)
-            with open(self.storage_path, "w", encoding="utf-8") as f:
+            temp_path = self.storage_path + ".tmp"
+            with open(temp_path, "w", encoding="utf-8") as f:
                 json.dump(self.memory_pool, f, indent=2)
+            os.replace(temp_path, self.storage_path)
         except Exception as e:
             log.warning("Failed to save memory pool to %s: %s", self.storage_path, e)
 
