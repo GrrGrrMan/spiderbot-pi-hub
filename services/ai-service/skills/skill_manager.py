@@ -28,12 +28,12 @@ class SkillManager:
         self.media_skill = MediaSkill(publish_frame_fn=self.publish_audio_frame_fn)
 
     def duck_audio(self):
-        """Lower media volume during voice interaction."""
-        self.media_skill.duck()
+        """Pause media streaming to yield the MQTT audio topic to TTS."""
+        self.media_skill.pause()
 
     def unduck_audio(self):
-        """Restore media volume after voice interaction."""
-        self.media_skill.unduck()
+        """Resume media streaming after TTS completes."""
+        self.media_skill.resume()
 
     def _handle_timer_expired(self, timer_data: Dict[str, Any]):
         label = timer_data.get("label", "Timer")

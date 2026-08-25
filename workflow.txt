@@ -66,4 +66,4 @@ ssh -t spider@spider-w.local "sudo systemctl restart omniroute hexapod-ai hexapo
 cd D:\Projects\hexapod-workspaces\V2\web-ui
 npm run build
 scp -r build/* spider@spider-w.local:/home/spider/v2-web-ui/build/
-ssh spider@spider-w.local "sudo chmod -R
+ssh spider@spider-w.local "sudo chmod -R /home/spider/v2-web-ui/build/"

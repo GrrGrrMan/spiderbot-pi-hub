@@ -557,6 +557,7 @@ Inspect image and return JSON:
         else:
             if completion_speech and not self.abort_event.is_set():
                 self.reply(completion_speech)
+                self.speak(completion_speech)
 
         if self.event:
             self.event({

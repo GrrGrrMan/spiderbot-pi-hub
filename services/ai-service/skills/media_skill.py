@@ -146,12 +146,20 @@ class MediaSkill:
         sample_rate = 22050
         start_time = time.monotonic()
         total_samples_sent = 0
+        remainder = b""
 
         try:
             while not self._stop_stream_event.is_set():
                 self._pause_event.wait()
+                
+                # Trick the ESP32 into thinking a brand new stream has started after a pause
+                if getattr(self, "_force_new_flow", False):
+                    seq = 0
+                    flow_id = random.randint(1, 0xFFFFFFFF)
+                    self._force_new_flow = False
+                    
                 if self._stop_stream_event.is_set():
-                    break
+                        break
 
                 with self._lock:
                     proc = self._ffmpeg_proc
@@ -161,11 +169,16 @@ class MediaSkill:
                 raw_bytes = proc.stdout.read(chunk_size)
                 if not raw_bytes:
                     break
-
+                
+                raw_bytes = remainder + raw_bytes
                 if len(raw_bytes) % 2 != 0:
+                    remainder = raw_bytes[-1:]
                     raw_bytes = raw_bytes[:-1]
+                else:
+                    remainder = b""
+                    
                 if not raw_bytes:
-                    break
+                    continue
 
                 vol_pct = self.duck_volume if self.is_ducked else self.current_volume
                 gain = max(0.0, min(1.0, vol_pct / 100.0))
@@ -177,7 +190,9 @@ class MediaSkill:
                 else:
                     payload_bytes = raw_bytes
 
-                header = struct.pack("<B B I H H", 0xAA, 0x00, flow_id, seq % 65535, 0)
+                # Wrap sequence to 1 (not 0) so we don't accidentally trigger the ESP32's TTS_START logic
+                safe_seq = (seq % 65534) + 1 if seq > 0 else 0
+                header = struct.pack("<B B I H H", 0xAA, 0x00, flow_id, safe_seq, 0)
                 frame = header + payload_bytes
 
                 if self.publish_frame_fn:
@@ -249,6 +264,7 @@ class MediaSkill:
         return {"status": "paused"}
 
     def resume(self) -> Dict[str, Any]:
+        self._force_new_flow = True
         self._pause_event.set()
         return {"status": "resumed"}
 

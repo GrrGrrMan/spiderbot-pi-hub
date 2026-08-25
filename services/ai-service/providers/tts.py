@@ -222,11 +222,17 @@ class TTSClient:
         # Use a random 32-bit integer for the flow ID instead of a UUID string
         flow_id = flow_id or random.randint(1, 0xFFFFFFFF)
 
-        # Strip 44-byte WAV header upfront so the ESP32 doesn't have to
-        if wav_bytes.startswith(b'RIFF') and len(wav_bytes) > 44:
-            pcm_bytes = wav_bytes[44:]
-        else:
-            pcm_bytes = wav_bytes
+        # Extract exact PCM payload via wave module to avoid hardcoded 44-byte stripping errors 
+        # (which cause horrific static on odd-length metadata chunks)
+        try:
+            import wave, io
+            with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+                pcm_bytes = wf.readframes(wf.getnframes())
+        except Exception:
+            if wav_bytes.startswith(b"RIFF") and len(wav_bytes) > 44:
+                pcm_bytes = wav_bytes[44:]
+            else:
+                pcm_bytes = wav_bytes
 
         # 4096 bytes fits safely inside the ESP32's 8192 byte MQTT buffer
         chunk_size = 4096

@@ -345,7 +345,6 @@ class AIService:
                 return 0.0
 
             self._audio_done_event.clear()
-            flow_id = random.randint(1, 0xFFFFFFFF)
             total_duration_s = 0.0
 
             for sentence in sentences:
@@ -357,10 +356,12 @@ class AIService:
                 duration_s = max(0.15, (len(wav) - 44) / 44100.0)
                 total_duration_s += duration_s
 
+                flow_id = random.randint(1, 0xFFFFFFFF)
                 for frame in self.tts.frames(wav, flow_id=flow_id):
                     if self.abort_event.is_set():
                         break
                     self._publish(self.topic_audio, frame)
+                    time.sleep(0.01) # Pace MQTT burst to avoid overwhelming ESP32 TCP window
 
             return total_duration_s
         except Exception as e:
