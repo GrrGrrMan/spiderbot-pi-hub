@@ -6,6 +6,8 @@ import logging
 import os
 import threading
 import time
+import random
+import struct
 import uuid
 import wave
 from typing import Any, Dict, List, Optional
@@ -202,18 +204,24 @@ class TTSClient:
         log.info("TTS generated via Local Piper in %.2fs (%d bytes)", time.time() - t0, len(local_wav))
         return local_wav
 
-    def frames(self, wav_bytes: bytes, flow_id: Optional[str] = None):
-        """Yields chunked base64 MQTT frames for ESP32-S3."""
-        flow_id = flow_id or uuid.uuid4().hex[:12]
-        b64 = base64.b64encode(wav_bytes).decode("ascii")
-        size = TTS_FRAME_MAX_B64
-        chunks = [b64[i : i + size] for i in range(0, len(b64), size)]
+    def frames(self, wav_bytes: bytes, flow_id: Optional[int] = None):
+        """Yields chunked raw binary MQTT frames for ESP32-S3."""
+        # Use a random 32-bit integer for the flow ID instead of a UUID string
+        flow_id = flow_id or random.randint(1, 0xFFFFFFFF)
+
+        # Strip 44-byte WAV header upfront so the ESP32 doesn't have to
+        if wav_bytes.startswith(b'RIFF') and len(wav_bytes) > 44:
+            pcm_bytes = wav_bytes[44:]
+        else:
+            pcm_bytes = wav_bytes
+
+        # 4096 bytes fits safely inside the ESP32's 8192 byte MQTT buffer
+        chunk_size = 4096
+        chunks = [pcm_bytes[i : i + chunk_size] for i in range(0, len(pcm_bytes), chunk_size)]
         total = len(chunks)
+
         for seq, chunk in enumerate(chunks):
-            yield {
-                "action": "tts",
-                "flow_id": flow_id,
-                "seq": seq,
-                "total": total,
-                "payload": chunk,
-            }
+            # Binary Header (10 Bytes): 
+            # < B (Magic 0xAA) B (Action 0=TTS) I (Flow uint32) H (Seq uint16) H (Total uint16)
+            header = struct.pack('<B B I H H', 0xAA, 0x00, flow_id, seq, total)
+            yield header + chunk

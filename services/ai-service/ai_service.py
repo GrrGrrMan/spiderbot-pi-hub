@@ -56,7 +56,84 @@ class AIService:
         self.topic_cam_cmd = f"hexapod/{self.cam_device_id}/cmd"
 
         self.telemetry: Dict[str, Any] = {}
+        self.cam_telemetry: Dict[str, Any] = {}
         self.abort_event = threading.Event()
+        self._http_session = requests.Session() if _HAS_REQUESTS else None
+
+        self.actions = load_actions(args.actions)
+        self.animations = load_animations()
+        self.wake_words = [
+            w.strip().lower() for w in os.environ.get("WAKE_WORDS", "hey spider,hey hexapod,ok spider").split(",") if w.strip()
+        ]
+        self.llm = (
+            LLMClient(
+                base_url=args.llm_base_url,
+                model=args.llm_model,
+                vision_model=args.llm_vision_model,
+                api_key=args.llm_api_key,
+            )
+            if args.llm
+            else None
+        )
+        self.stt = STTClient() if args.stt else None
+        self.tts = (
+            TTSClient(
+                base_url=args.llm_base_url,
+                api_key=args.llm_api_key,
+                model=os.environ.get("TTS_MODEL", "local"),
+            )
+            if args.tts
+            else None
+        )
+        if self.tts:
+            self.tts.warmup()
+
+        self.memory = MemoryManager(
+            storage_path="/opt/hexapod-ai/memory_pool.json",
+            mode=os.environ.get("MEMORY_MODE", MemoryMode.SESSION),
+        )
+        self.pipeline = Pipeline(self.actions, llm=self.llm, stt=self.stt)
+
+        self.embodied_agent = (
+            EmbodiedAgent(
+                llm_client=self.llm,
+                fetch_snapshot_fn=self.fetch_camera_snapshot,
+                publish_s3_cmd_fn=self._on_cmd,
+                publish_cam_cmd_fn=self._on_cam_cmd,
+                speak_fn=self._on_tts_text,
+                reply_fn=self._on_ai_reply,
+                event_fn=self._on_agent_event,
+                directive_fn=self._on_action_directive,
+                abort_event=self.abort_event,
+            )
+            if self.llm
+            else None
+        )
+
+        self.mqtt = None
+        self._work = queue.Queue(maxsize=16)
+        self._busy = False
+        self._running = True
+        self._sender = f"ai-service-{self.device_id}"
+        self._audio_done_event = threading.Event()
+        self._last_msg_text = ""
+        self._last_msg_ts = 0.0
+
+    def get_live_state_block(self) -> str:
+        """Builds a real-time state grounding summary for the LLM context."""
+        cam_flash = self.cam_telemetry.get("flash_pct", 0)
+        cam_fps = self.cam_telemetry.get("target_fps", 10)
+        is_powered = self.telemetry.get("power", True)
+        audio_state = self.telemetry.get("audio", "idle")
+
+        lines = [
+            "\n### CURRENT HARDWARE PERIPHERAL STATE:",
+            f"- Camera Flashlight: {cam_flash}% active",
+            f"- Camera Stream Target: {cam_fps} FPS",
+            f"- Servo Bus Power: {'ENABLED' if is_powered else 'LIMP / DISABLED'}",
+            f"- Audio Subsystem: {audio_state.upper()}",
+        ]
+        return "\n".join(lines) + "\n"
         self._http_session = requests.Session() if _HAS_REQUESTS else None
 
         self.actions = load_actions(args.actions)
@@ -141,7 +218,9 @@ class AIService:
         client.subscribe(self.topic_ai_memory_cmd)
         client.subscribe(self.topic_audio_status)
         client.subscribe(self.topic_telemetry)
-        log.info("Subscribed -> %s, %s, %s, %s, %s", self.topic_ai, self.topic_ai_config, self.topic_ai_memory_cmd, self.topic_audio_status, self.topic_telemetry)
+        topic_cam_tel = f"hexapod/{self.cam_device_id}/telemetry"
+        client.subscribe(topic_cam_tel)
+        log.info("Subscribed -> %s, %s, %s, %s, %s, %s", self.topic_ai, self.topic_ai_config, self.topic_ai_memory_cmd, self.topic_audio_status, self.topic_telemetry, topic_cam_tel)
         self._broadcast_memory_state()
 
     def _on_message(self, client, userdata, msg):
@@ -187,6 +266,10 @@ class AIService:
 
         if msg.topic == self.topic_telemetry:
             self.telemetry = data
+            return
+
+        if msg.topic == f"hexapod/{self.cam_device_id}/telemetry":
+            self.cam_telemetry = data
             return
 
         if msg.topic == self.topic_audio_status:
@@ -235,8 +318,10 @@ class AIService:
     def _publish(self, topic, payload, qos=0, retain=False):
         if not self.mqtt or not self.mqtt.is_connected():
             return
-        self.mqtt.publish(topic, json.dumps(payload), qos=qos, retain=retain)
-
+        if isinstance(payload, bytes):
+            self.mqtt.publish(topic, payload, qos=qos, retain=retain)
+        else:
+            self.mqtt.publish(topic, json.dumps(payload), qos=qos, retain=retain)
     def _on_cmd(self, payload):
         self._publish(self.topic_cmd_dev, payload)
 
@@ -395,10 +480,11 @@ class AIService:
         session_history = self.memory.get_context_history()
         memory_block = self.memory.get_memory_pool_prompt_block()
 
-        # 2. Grab camera snapshot for vision context
+        # 2. Grab camera snapshot and live peripheral state for vision & state grounding
         current_frame = self.fetch_camera_snapshot()
+        state_block = self.get_live_state_block()
 
-        result = self.pipeline.decide(text, history=session_history, image_b64=current_frame, memory_block=memory_block)
+        result = self.pipeline.decide(text, history=session_history, image_b64=current_frame, memory_block=memory_block, state_block=state_block)
 
         # 3. Store assistant response into memory
         if result.reply:

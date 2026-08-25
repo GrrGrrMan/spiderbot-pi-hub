@@ -60,6 +60,7 @@ class Pipeline:
         history: Optional[List[Dict[str, Any]]] = None,
         image_b64: Optional[str] = None,
         memory_block: str = "",
+        state_block: str = "",
     ) -> PipelineResult:
         norm = (text or "").lower().strip().replace("foward", "forward")
         if not norm:
@@ -69,7 +70,7 @@ class Pipeline:
         if self.llm and self.llm.status != "offline":
             try:
                 speech, timeline, order, thought, task_title, camera_cmd, audio_cmd = self.llm.chat(
-                    self.actions, self.animations, text, history=history or [], image_b64=image_b64, memory_block=memory_block
+                    self.actions, self.animations, text, history=history or [], image_b64=image_b64, memory_block=memory_block, state_block=state_block
                 )
 
                 # Check if this requires multi-step compound graph execution
@@ -136,14 +137,23 @@ class Pipeline:
             })
             return
 
-        # 2. Hardware Camera Tuning & Clamping
+        # 2. Hardware Camera Tuning & Presets
         if result.camera_cmd and on_cam_cmd:
             cam_payload: Dict[str, Any] = {"type": "camera"}
             c = result.camera_cmd
+
+            if "preset" in c and c["preset"]:
+                cam_payload["preset"] = str(c["preset"]).strip().lower()
+
             if "flash" in c or "lamp" in c or "led" in c:
                 val = c.get("flash", c.get("lamp", c.get("led", 0)))
                 try:
                     cam_payload["flash"] = max(0, min(100, int(val)))
+                except (ValueError, TypeError):
+                    pass
+            if "fps" in c:
+                try:
+                    cam_payload["fps"] = max(1, min(30, int(c["fps"])))
                 except (ValueError, TypeError):
                     pass
             if "quality" in c:
@@ -171,6 +181,13 @@ class Pipeline:
                     cam_payload["special_effect"] = max(0, min(6, int(c["special_effect"])))
                 except (ValueError, TypeError):
                     pass
+            if "exposure_ctrl" in c:
+                cam_payload["exposure_ctrl"] = bool(c["exposure_ctrl"])
+            if "ae_level" in c:
+                try:
+                    cam_payload["ae_level"] = max(-2, min(2, int(c["ae_level"])))
+                except (ValueError, TypeError):
+                    pass
             if "crop" in c and isinstance(c["crop"], (list, tuple)) and len(c["crop"]) == 4:
                 try:
                     sx, sy, w, h = [int(v) for v in c["crop"]]
@@ -181,11 +198,31 @@ class Pipeline:
                     cam_payload["crop"] = [sx, sy, w, h]
                 except (ValueError, TypeError):
                     pass
+
             on_cam_cmd(cam_payload)
 
-        # 3. Audio & Expressive Sounds
+        # 3. Master Audio, Presets & Expressive Sounds
         if result.audio_cmd and on_audio:
             a = result.audio_cmd
+
+            # Master Hardware Volume scaling
+            if "volume" in a:
+                try:
+                    vol = max(0.0, min(1.0, float(a["volume"])))
+                    on_audio({"action": "volume", "volume": vol})
+                except (ValueError, TypeError):
+                    pass
+
+            # Audio Presets
+            if "preset" in a and a["preset"]:
+                p_name = str(a["preset"]).strip().lower()
+                if p_name in ("stealth", "mute", "quiet"):
+                    on_audio({"action": "volume", "volume": 0.0})
+                elif p_name in ("alert", "loud"):
+                    on_audio({"action": "volume", "volume": 0.85})
+                elif p_name in ("normal", "default"):
+                    on_audio({"action": "volume", "volume": 0.35})
+
             if "action" in a:
                 on_audio(a)
             elif "alarm" in a:

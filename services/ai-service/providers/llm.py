@@ -53,52 +53,6 @@ def sanitize_speech_echo(speech: str, user_text: str) -> str:
 
 def repair_truncated_json(raw: str) -> Optional[Dict[str, Any]]:
     """Repairs unclosed quotes, arrays, and objects from token-truncated JSON."""
-    s = raw.strip()
-    if not s.startswith("{"):
-        start = s.find("{")
-        if start != -1:
-            s = s[start:]
-        else:
-            return None
-
-    # Check direct parse first
-    try:
-        return json.loads(s)
-    except Exception:
-        pass
-
-    # Clean unclosed trailing keys/values
-    s = re.sub(r',\s*"[^"]*":?\s*$', '', s)
-    s = re.sub(r',\s*$', '', s)
-
-    # Balance unclosed quotes
-    quote_count = s.count('"') - s.count('\\"')
-    if quote_count % 2 != 0:
-        s += '"'
-
-    # Balance unclosed brackets and braces
-    open_brackets = s.count('[') - s.count(']')
-    open_braces = s.count('{') - s.count('}')
-
-    s += ']' * max(0, open_brackets)
-    s += '}' * max(0, open_braces)
-
-    try:
-        return json.loads(s)
-    except Exception:
-        # Fallback: remove last broken element and close
-        last_comma = s.rfind(',')
-        if last_comma != -1:
-            candidate = s[:last_comma] + ']' * max(0, open_brackets) + '}' * max(0, open_braces)
-            try:
-                return json.loads(candidate)
-            except Exception:
-                pass
-    return None
-
-
-def repair_truncated_json(raw: str) -> Optional[Dict[str, Any]]:
-    """Repairs unclosed quotes, arrays, and objects from token-truncated JSON."""
     s = (raw or "").strip()
     if not s:
         return None
@@ -154,56 +108,6 @@ def parse_json_response(raw_text: str, user_prompt: str = "") -> Tuple[str, List
     """Parses LLM JSON output returning (speech, timeline, order, thought, task_title, camera_cmd, audio_cmd)."""
     cleaned = (raw_text or "").strip()
     data = repair_truncated_json(cleaned)
-
-    if isinstance(data, dict):
-        thought = str(data.get("thought") or data.get("reasoning") or data.get("deliberation") or "").strip()
-        task_title = str(data.get("task_title") or data.get("title") or "Task").strip()
-        speech = str(
-            data.get("speech")
-            or data.get("reply")
-            or data.get("response")
-            or data.get("message")
-            or data.get("text")
-            or data.get("content")
-            or ""
-        ).strip()
-
-        # Clean roleplay asterisks from speech
-        speech = re.sub(r"\*[^*]+\*", "", speech)
-        speech = re.sub(r"\s+", " ", speech).strip()
-
-        order = data.get("order") or "tts_first"
-        if order not in ("tts_first", "action_first", "simultaneous"):
-            order = "tts_first"
-
-        timeline = data.get("timeline") or data.get("steps") or data.get("actions") or []
-        if not isinstance(timeline, list):
-            timeline = []
-
-        if not timeline and (data.get("action") or data.get("action_id")):
-            act_id = data.get("action") or data.get("action_id")
-            timeline = [{"type": "action", "id": str(act_id), "duration_ms": data.get("duration_ms", 2000)}]
-
-        camera_cmd = data.get("camera") or data.get("cam")
-        if not isinstance(camera_cmd, dict):
-            camera_cmd = None
-
-        audio_cmd = data.get("audio") or data.get("sound")
-        if not isinstance(audio_cmd, dict):
-            audio_cmd = None
-
-        if not speech or speech.startswith("{") or speech.startswith("["):
-            if timeline:
-                first_action = timeline[0].get("id") or timeline[0].get("name") or timeline[0].get("type") or "action"
-                speech = f"On it — executing {first_action}."
-            else:
-                speech = "I'm ready for your command."
-
-        speech = sanitize_speech_echo(speech, user_prompt)
-        return speech, timeline, order, thought, task_title, camera_cmd, audio_cmd
-
-    fallback_speech = sanitize_speech_echo(cleaned, user_prompt)
-    return fallback_speech, [], "tts_first", "", "Task", None, None
 
     if isinstance(data, dict):
         thought = str(data.get("thought") or data.get("reasoning") or data.get("deliberation") or "").strip()
@@ -358,7 +262,7 @@ class LLMClient:
         return self._ensure()
 
     def build_system_prompt(
-        self, actions: List[Dict[str, Any]], animations: Dict[str, Any], memory_block: str = ""
+        self, actions: List[Dict[str, Any]], animations: Dict[str, Any], memory_block: str = "", state_block: str = ""
     ) -> str:
         valid_actions = [a["id"] for a in actions]
         valid_animations = list(animations.keys())
@@ -366,22 +270,27 @@ class LLMClient:
         custom_block = f"\nADDITIONAL USER INSTRUCTIONS:\n{self.custom_instructions}" if self.custom_instructions else ""
 
         return f"""You are the active AI consciousness of an agile physical 6-legged Hexapod robot.
-{persona_text}{custom_block}{memory_block}
+{persona_text}{custom_block}{memory_block}{state_block}
 
 ### HARDWARE PERCEPTION & HARDWARE SUBSYSTEMS:
-1. OPTICAL CORTEX (Front RGB Camera):
+1. OPTICAL CORTEX (Front RGB Camera & Lighting):
    • Inspect provided camera images to answer visual questions or guide locomotion.
    • You can adjust the camera hardware live by including a "camera" object:
-     - "flash": Flashlight brightness (0 to 100%). Use when scene is dark or inspecting shadows.
+     - "preset": "night_vision" (flash ON, high gain) | "inspection" (macro zoom, high quality) | "stealth" (flash OFF, standard) | "default" | "low_power" (5 FPS).
+     - "flash": Flashlight brightness percentage (0 to 100%). Use when scene is dark or exploring shadows.
      - "crop": Digital Zoom / Windowing as [startX, startY, width, height] within 640x480 (e.g. [120, 90, 400, 300]).
      - "special_effect": 0=Normal, 1=Negative, 2=Grayscale, 6=Sepia.
-     - "quality": JPEG quality (10=crisp, 30=standard).
+     - "quality": JPEG compression quality (8=high detail, 12=default, 30=low bandwidth).
+     - "fps": Target framerate (1 to 30 FPS).
      - "brightness" / "contrast" / "saturation": -2 to 2.
+     - "exposure_ctrl": true / false, "ae_level": -2 to 2.
 
-2. ACOUSTIC EMOTIONS & SOUNDS:
-   • You can play hardware sound effects by including an "audio" object:
+2. ACOUSTIC EMOTIONS & MASTER AUDIO:
+   • You can modulate master volume and play hardware sounds by including an "audio" object:
+     - "volume": Master speaker volume from 0.0 (muted) to 1.0 (100% max). Set when user asks to turn volume up/down/mute.
+     - "preset": "stealth" (mute/quiet) | "alert" (high volume, alarm ready) | "normal".
      - "alarm": "curious" (happy rising tone) | "startle" (alarm chirp) | "idle" (calm chirp).
-     - "beep": true (single beep).
+     - "beep": true (single confirmation beep).
 
 3. 18-DOF KINEMATICS & MOTION:
    • 6-DoF Body Pose (ALL OFFSETS IN MILLIMETERS mm):
@@ -420,10 +329,12 @@ Respond strictly in JSON:
   "speech": "Warm, natural spoken reply in first-person (1-2 sentences)",
   "order": "tts_first | action_first | simultaneous",
   "camera": {{
+    "preset": "default",
     "flash": 0,
     "special_effect": 0
   }},
   "audio": {{
+    "volume": 0.35,
     "alarm": "curious"
   }},
   "timeline": [
@@ -485,9 +396,10 @@ Respond strictly in JSON:
         history: Optional[List[Dict[str, Any]]] = None,
         image_b64: Optional[str] = None,
         memory_block: str = "",
+        state_block: str = "",
     ) -> Tuple[str, List[Dict[str, Any]], str, str, str, Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
         client = self._ensure()
-        system = self.build_system_prompt(actions, animations, memory_block=memory_block)
+        system = self.build_system_prompt(actions, animations, memory_block=memory_block, state_block=state_block)
         messages = self._build_sanitized_messages(system, text, history, image_b64=image_b64)
 
         req_kwargs: Dict[str, Any] = {

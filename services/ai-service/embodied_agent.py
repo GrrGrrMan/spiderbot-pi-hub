@@ -222,9 +222,10 @@ Decompose this into a chronological JSON execution plan:
   "completion_speech": "Warm spoken confirmation after completion",
   "steps": [
     {{
-      "desc": "Short description (e.g. 'Walking forward', 'Turning 90 degrees left', 'Dancing')",
-      "type": "walk_forward | walk_backward | rotate_left | rotate_right | pose | gesture | speak | audio | pause",
+      "desc": "Short description (e.g. 'Walking forward', 'Turning on flashlight', 'Looking around', 'Dancing')",
+      "type": "walk_forward | walk_backward | rotate_left | rotate_right | pose | gesture | camera | speak | audio | pause",
       "gesture": "Name from {valid_gestures} if type is gesture",
+      "camera_cmd": {{ "preset": "night_vision|inspection|default", "flash": 80, "special_effect": 0 }},
       "text": "Text to speak if type is speak",
       "audio_track": "Track or alarm name if type is audio",
       "vx": 45,
@@ -412,6 +413,14 @@ RULES:
             if is_anim:
                 target_anim = anim_candidate if anim_candidate in self.animations else act_id
                 self._execute_gesture(target_anim)
+            elif stype in ("camera", "cam", "flashlight", "light"):
+                cam_obj = step.get("camera_cmd") or p.get("camera_cmd") or {}
+                if not cam_obj and "flash" in p:
+                    cam_obj = {"flash": p["flash"]}
+                if cam_obj:
+                    cam_payload = {"type": "camera", **cam_obj}
+                    self.publish_cam_cmd(cam_payload)
+                    self._sleep_interruptible(0.2)
             elif stype in ("speak", "say", "count"):
                 speak_text = str(step.get("text") or p.get("text") or sdesc)
                 if speak_text:
@@ -424,7 +433,7 @@ RULES:
                     self.reply("Playing Baby Shark!")
                     self.speak("Baby shark doo doo doo doo doo doo!")
                 else:
-                    self.publish_s3_cmd({"type": "audio", "action": "alarm", "payload": track})
+                    self._on_audio({"action": "alarm", "payload": track})
             elif stype in ("pause", "wait"):
                 self._sleep_interruptible(dur)
             else:
