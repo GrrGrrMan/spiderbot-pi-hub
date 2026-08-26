@@ -35,34 +35,34 @@ The Pi-Hub acts as a multi-tier bridge orchestrating communication between the r
 
 ```mermaid
 flowchart TD
-    subgraph Layer1 ["Client Tier"]
+    subgraph ClientTier ["Client Tier"]
         UI["Web-UI / Mobile Client"]
     end
 
-    subgraph Layer2 ["Pi-Hub Gateway Tier"]
+    subgraph GatewayTier ["Pi-Hub Gateway Tier"]
         NGINX["Nginx Gateway<br/>(:80 / :443)"]
         MQTT["Mosquitto Broker<br/>(:1883 TCP / :9001 WS)"]
-        CAM["Camera Relay<br/>(:8088)"]
-        AI["AI Cognitive Service<br/>(hexapod-ai)"]
+        CAM_RELAY["Camera Relay<br/>(:8088)"]
+        AI["AI Service<br/>(hexapod-ai)"]
         OMNI["OmniRoute Gateway<br/>(:20128/v1)"]
     end
 
-    subgraph Layer3 ["Hardware Tier"]
+    subgraph HardwareTier ["Hardware Tier"]
         S3["ESP32-S3 Controller<br/>(18-DOF IK & Audio)"]
-        CAM_HW["ESP32-CAM<br/>(OV2640 MJPEG)"]
+        CAM_HW["ESP32-CAM Node<br/>(OV2640 MJPEG)"]
     end
 
     UI -->|HTTPS / WSS| NGINX
     NGINX -->|/mqtt| MQTT
-    NGINX -->|/cam-stream| CAM
+    NGINX -->|/cam-stream| CAM_RELAY
 
     MQTT <-->|Commands & State| AI
     MQTT <-->|Kinematics & Audio| S3
     CAM_HW -.->|Announce IP| MQTT
 
     AI <-->|VLM API| OMNI
-    CAM -->|Snapshot Frame| AI
-    CAM_HW -->|MJPEG Pull| CAM
+    CAM_RELAY -->|Snapshot Frame| AI
+    CAM_HW -->|MJPEG Pull| CAM_RELAY
 ```
 
 ---
@@ -76,28 +76,32 @@ Speech input is transcribed, visually grounded via camera snapshots, reasoned ov
 ```mermaid
 sequenceDiagram
     actor User
-    participant UI as Web-UI
+    participant UI as Web-UI Client
+    participant MQTT as Mosquitto Broker
     participant AI as AI Service
-    participant CAM as Camera Relay
-    participant LLM as OmniRoute (VLM)
-    participant S3 as ESP32-S3 Robot
+    participant CAM_RELAY as Camera Relay (:8088)
+    participant OMNI as OmniRoute Gateway (VLM)
+    participant S3 as ESP32-S3 Controller
 
-    User->>UI: Speak Command<br/>("Walk forward and wave")
-    UI->>AI: Audio Payload (MQTT)
-    AI->>AI: Transcribe (Whisper)
+    User->>UI: Speak / Type Command ("Walk forward and wave")
+    UI->>MQTT: Publish hexapod/{id}/ai (Audio / Text)
+    MQTT->>AI: Dispatch Payload
+    AI->>AI: Transcribe Speech (Whisper STT)
 
-    opt Visual Inspection (If needed)
-        AI->>CAM: GET /snapshot
-        CAM-->>AI: JPEG Frame
+    opt Visual Grounding (If scene inspection needed)
+        AI->>CAM_RELAY: GET /snapshot
+        CAM_RELAY-->>AI: JPEG Frame
     end
 
-    AI->>LLM: Prompt + Frame
-    LLM-->>AI: Motion Plan & Spoken Text
+    AI->>OMNI: POST /v1/chat/completions (Prompt + Frame)
+    OMNI-->>AI: Tool Calls / Motion Plan & Spoken Text
 
-    Note over AI,S3: Concurrent Audio & Motion Execution
-    AI->>S3: 1. Stream 22kHz Audio Chunks (TTS)
-    AI->>S3: 2. Stream 20Hz Motion Leases (/cmd)
-    S3-->>User: Physical Movement + Spoken Voice
+    Note over AI,S3: Concurrent Execution via MQTT
+    AI->>MQTT: Stream 22kHz Audio Frames (hexapod/{id}/audio)
+    MQTT->>S3: Forward PCM Chunks to I2S DAC
+    AI->>MQTT: Stream 20Hz Motion Leases (hexapod/{id}/cmd)
+    MQTT->>S3: Execute Kinematics & Servo IK
+    S3-->>User: Physical Movement + Spoken Audio
 ```
 
 ### 2. Dynamic Camera Discovery & Relay
@@ -106,19 +110,25 @@ The relay tracks the ESP32-CAM IP across networks via MQTT and fans out the sing
 
 ```mermaid
 sequenceDiagram
-    participant CAM as ESP32-CAM Node
+    participant CAM_HW as ESP32-CAM Node
     participant MQTT as Mosquitto Broker
-    participant Relay as Camera Relay (:8088)
-    participant AI as AI Vision Cortex
-    participant UI as Web-UI Viewers
+    participant CAM_RELAY as Camera Relay (:8088)
+    participant NGINX as Nginx Gateway
+    participant AI as AI Service
+    participant UI as Web-UI Client
 
-    CAM->>MQTT: Announce IP Address (telemetry)
-    MQTT->>Relay: Auto-discover Camera IP
-    Relay->>CAM: Connect HTTP Stream (:81/stream)
+    CAM_HW->>MQTT: Publish hexapod/{cam_id}/telemetry (IP & Port)
+    MQTT->>CAM_RELAY: Auto-discover Camera Endpoint
+    CAM_RELAY->>CAM_HW: Connect HTTP Stream (GET :81/stream)
+    CAM_HW-->>CAM_RELAY: Stream MJPEG Frames
 
-    Note over Relay,UI: 1-to-N Stream Distribution
-    Relay-->>UI: Live Stream (/cam-stream)
-    Relay-->>AI: Frame Snapshot (/snapshot)
+    Note over CAM_RELAY,UI: 1-to-N Stream Distribution
+    UI->>NGINX: GET /cam-stream
+    NGINX->>CAM_RELAY: Proxy Request (:8088)
+    CAM_RELAY-->>UI: Live MJPEG Fan-out Stream
+    
+    AI->>CAM_RELAY: GET /snapshot (On-demand)
+    CAM_RELAY-->>AI: Latest Cached JPEG Frame
 ```
 
 ---
