@@ -1,0 +1,1 @@
+Tranfer configs to the parent of this folder (/conf/ instead of /conf/examples/)
