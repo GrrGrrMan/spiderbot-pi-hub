@@ -35,34 +35,34 @@ The Pi-Hub acts as a multi-tier bridge orchestrating communication between the r
 
 ```mermaid
 flowchart TD
-    Client([Web / Mobile Client])
-
-    subgraph PiHub["Raspberry Pi (Pi-Hub)"]
-        NGINX["Nginx Gateway\n(:80 / :443)"]
-        MQTT["Mosquitto MQTT\n(:1883 TCP / :9001 WS)"]
-        CAM_RELAY["Camera Fanout Relay\n(:8088)"]
-        OMNIROUTE["OmniRoute Proxy\n(:20128 /v1)"]
-        AI["AI Cognitive Service\n(hexapod-ai)"]
+    subgraph Layer1 ["Client Tier"]
+        UI["Web-UI / Mobile Client"]
     end
 
-    subgraph Hardware["Hardware Subsystems"]
-        S3["ESP32-S3 Controller\n(18-DOF IK & I2S Audio)"]
-        CAM["ESP32-CAM Sensor\n(OV2640 MJPEG :81)"]
+    subgraph Layer2 ["Pi-Hub Gateway Tier"]
+        NGINX["Nginx Gateway<br/>(:80 / :443)"]
+        MQTT["Mosquitto Broker<br/>(:1883 TCP / :9001 WS)"]
+        CAM["Camera Relay<br/>(:8088)"]
+        AI["AI Cognitive Service<br/>(hexapod-ai)"]
+        OMNI["OmniRoute Gateway<br/>(:20128/v1)"]
     end
 
-    Client -->|HTTPS / WSS| NGINX
-    NGINX -->|Proxy /mqtt| MQTT
-    NGINX -->|Proxy /cam-stream| CAM_RELAY
+    subgraph Layer3 ["Hardware Tier"]
+        S3["ESP32-S3 Controller<br/>(18-DOF IK & Audio)"]
+        CAM_HW["ESP32-CAM<br/>(OV2640 MJPEG)"]
+    end
 
-    MQTT <-->|hexapod/+/ai & /cmd| AI
+    UI -->|HTTPS / WSS| NGINX
+    NGINX -->|/mqtt| MQTT
+    NGINX -->|/cam-stream| CAM
+
+    MQTT <-->|Commands & State| AI
     MQTT <-->|Kinematics & Audio| S3
-    MQTT <--|IP Telemetry| CAM
+    CAM_HW -.->|Announce IP| MQTT
 
-    AI <-->|LLM / VLM API| OMNIROUTE
-    AI <--|Snapshot Frames| CAM_RELAY
-
-    CAM -->|Pull Stream :81| CAM_RELAY
-    CAM_RELAY -->|Fanout Stream| Client
+    AI <-->|VLM API| OMNI
+    AI <--|Snapshot Frame| CAM
+    CAM_HW -->|MJPEG Pull| CAM
 ```
 
 ---
@@ -71,68 +71,54 @@ flowchart TD
 
 ### 1. Multimodal Voice & Motion Execution
 
-Speech input is transcribed, grounded with camera frame snapshots, reasoned over via the VLM cortex, and simultaneously executed as synthesized I2S audio frames and 20 Hz kinematic control leases:
+Speech input is transcribed, visually grounded via camera snapshots, reasoned over by the VLM, and dispatched concurrently as synthesized audio and 20 Hz kinematic control leases:
 
 ```mermaid
 sequenceDiagram
-    autonumber
     actor User
     participant UI as Web-UI
-    participant AI as AI Service (Pi-Hub)
-    participant LLM as OmniRoute (VLM)
+    participant AI as AI Service
     participant CAM as Camera Relay
-    participant S3 as ESP32-S3 (Robot)
+    participant LLM as OmniRoute (VLM)
+    participant S3 as ESP32-S3 Robot
 
-    User->>UI: Speaks Command ("Walk forward and wave")
-    UI->>AI: Stream Audio Payload (MQTT)
-    AI->>AI: Transcribe Audio (Groq / Whisper)
+    User->>UI: Speak Command<br/>("Walk forward and wave")
+    UI->>AI: Audio Payload (MQTT)
+    AI->>AI: Transcribe (Whisper)
 
-    opt Visual Context Needed
+    opt Visual Inspection (If needed)
         AI->>CAM: GET /snapshot
-        CAM-->>AI: Return JPEG Frame
+        CAM-->>AI: JPEG Frame
     end
 
-    AI->>LLM: Reasoning & Task Planning
-    LLM-->>AI: JSON Plan (Timeline + Speech)
+    AI->>LLM: Prompt + Frame
+    LLM-->>AI: Motion Plan & Spoken Text
 
-    par TTS Speech Output
-        AI->>S3: Stream 22kHz PCM Audio Chunks (MQTT)
-        S3-->>User: Plays Voice via Speaker
-    and Physical Kinematics
-        loop Motion Duration
-            AI->>S3: Stream 20Hz Motion Leases (/cmd)
-            S3->>S3: 18-DOF IK Gait Execution
-        end
-    end
+    Note over AI,S3: Concurrent Audio & Motion Execution
+    AI->>S3: 1. Stream 22kHz Audio Chunks (TTS)
+    AI->>S3: 2. Stream 20Hz Motion Leases (/cmd)
+    S3-->>User: Physical Movement + Spoken Voice
 ```
 
 ### 2. Dynamic Camera Discovery & Relay
 
-The camera relay automatically tracks the ESP32-CAM on changing Wi-Fi networks (Home Wi-Fi, Hotspot, Field Router) and fans out the single stream to multiple web clients and AI vision endpoints:
+The relay tracks the ESP32-CAM IP across networks via MQTT and fans out the single stream to web viewers and AI perception loops:
 
 ```mermaid
 sequenceDiagram
-    autonumber
     participant CAM as ESP32-CAM Node
     participant MQTT as Mosquitto Broker
     participant Relay as Camera Relay (:8088)
     participant AI as AI Vision Cortex
-    participant Client as Web-UI Viewers
+    participant UI as Web-UI Viewers
 
-    CAM->>CAM: Connects to Wi-Fi
-    CAM->>MQTT: Publish IP & Stream URL (telemetry)
-    MQTT->>Relay: Auto-Discover Camera IP Address
-    Relay->>CAM: Connect HTTP GET :81/stream
+    CAM->>MQTT: Announce IP Address (telemetry)
+    MQTT->>Relay: Auto-discover Camera IP
+    Relay->>CAM: Connect HTTP Stream (:81/stream)
 
-    loop Continuous MJPEG Feed
-        CAM-->>Relay: Stream Video Chunks
-        par Fanout to Web Clients
-            Relay-->>Client: Stream /cam-stream
-        and VLM Perception Snapshots
-            AI->>Relay: GET /snapshot
-            Relay-->>AI: Return Current Frame
-        end
-    end
+    Note over Relay,UI: 1-to-N Stream Distribution
+    Relay-->>UI: Live Stream (/cam-stream)
+    Relay-->>AI: Frame Snapshot (/snapshot)
 ```
 
 ---
