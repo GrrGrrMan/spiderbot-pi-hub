@@ -1,4 +1,4 @@
-# Hexapod V2 — Pi-Hub Gateway & Edge AI System
+# Hexapod V2 — Pi-Hub Gateway & AI System
 
 [![Platform](https://img.shields.io/badge/Platform-Raspberry%20Pi%20OS%20%2864--bit%29-red.svg)](https://www.raspberrypi.com/software/)
 [![Python](https://img.shields.io/badge/Python-3.10%20%7C%203.11-blue.svg)](https://www.python.org/)
