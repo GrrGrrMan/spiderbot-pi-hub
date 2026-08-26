@@ -61,7 +61,7 @@ flowchart TD
     CAM_HW -.->|Announce IP| MQTT
 
     AI <-->|VLM API| OMNI
-    AI <--|Snapshot Frame| CAM
+    CAM -->|Snapshot Frame| AI
     CAM_HW -->|MJPEG Pull| CAM
 ```
 
