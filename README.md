@@ -1,13 +1,13 @@
 # Hexapod V2 — Pi-Hub Gateway & AI System
 
-[![Platform](https://img.shields.io/badge/Platform-Raspberry%20Pi%20OS%20%2864--bit%29-red.svg)](https://www.raspberrypi.com/software/)
-[![Python](https://img.shields.io/badge/Python-3.10%20%7C%203.11-blue.svg)](https://www.python.org/)
-[![MQTT](https://img.shields.io/badge/MQTT-Mosquitto%20v2.0-orange.svg)](https://mosquitto.org/)
-[![Nginx](https://img.shields.io/badge/Nginx-Reverse%20Proxy%20%26%20Ingress-green.svg)](https://nginx.org/)
-[![AI Engine](https://img.shields.io/badge/AI-OmniRoute%20%2B%20Faster--Whisper%20%2B%20Piper-purple.svg)](https://github.com/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/Platform-Raspberry%20Pi%20OS%20%2864--bit%29-18181b?style=flat-square&logo=raspberrypi&logoColor=white)](https://www.raspberrypi.com/software/)
+[![Python](https://img.shields.io/badge/Python-3.10%20%7C%203.11-18181b?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
+[![MQTT](https://img.shields.io/badge/MQTT-Mosquitto%20v2.0-18181b?style=flat-square&logo=eclipsemosquitto&logoColor=white)](https://mosquitto.org/)
+[![Nginx](https://img.shields.io/badge/Nginx-Reverse%20Proxy-18181b?style=flat-square&logo=nginx&logoColor=white)](https://nginx.org/)
+[![AI Pipeline](https://img.shields.io/badge/AI-Whisper%20%2B%20Piper%20%2B%20VLM-18181b?style=flat-square)](https://github.com/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-18181b?style=flat-square)](LICENSE)
 
-**Pi-Hub** is the central computing, networking, and cognitive intelligence hub for the **Hexapod V2** robotics platform. Operating on a Raspberry Pi, it unifies physical hardware telemetry (ESP32-S3 kinematics and ESP32-CAM vision) with high-level multimodal AI capabilities, real-time audio/video relays, and a unified ingress gateway for both remote and offline operation.
+**Pi-Hub** is the central computing, networking, and cognitive intelligence gateway for the **Hexapod V2** robotics platform. Operating on a Raspberry Pi, it unifies physical hardware telemetry (ESP32-S3 kinematics and ESP32-CAM vision) with multimodal AI pipelines, real-time audio/video distribution, and a centralized ingress architecture for both remote and air-gapped environments.
 
 ---
 
@@ -31,7 +31,7 @@
 
 ## System Architecture
 
-The Pi-Hub acts as a multi-tier bridge orchestrating communication between the robot's microcontrollers, client applications, and cloud/local AI providers:
+The Pi-Hub acts as a multi-tier bridge orchestrating communication between the robot's microcontrollers, client applications, and local or cloud AI backends:
 
 ```mermaid
 flowchart TD
@@ -71,7 +71,7 @@ flowchart TD
 
 ### 1. Multimodal Voice & Motion Execution
 
-Speech input is transcribed, visually grounded via camera snapshots, reasoned over by the VLM, and dispatched concurrently as synthesized audio and 20 Hz kinematic control leases:
+Speech input is transcribed, visually grounded via camera snapshots, reasoned over by the Vision-Language Model (VLM), and dispatched concurrently as synthesized audio and 20 Hz kinematic control leases:
 
 ```mermaid
 sequenceDiagram
@@ -106,7 +106,7 @@ sequenceDiagram
 
 ### 2. Dynamic Camera Discovery & Relay
 
-The relay tracks the ESP32-CAM IP across networks via MQTT and fans out the single stream to web viewers and AI perception loops:
+The relay tracks the ESP32-CAM IP across local networks via MQTT and fans out the single stream to browser clients and AI perception loops:
 
 ```mermaid
 sequenceDiagram
@@ -135,17 +135,17 @@ sequenceDiagram
 
 ## Directory Structure
 
-```
+```text
 pi-hub/
-├── conf/                           # Canonical environment & service configurations
-│   ├── ai.env                      # LLM models, endpoints, and TTS settings
+├── conf/                           # Environment & service configurations
+│   ├── ai.env                      # LLM models, endpoints, and TTS parameters
 │   ├── cam_relay.env               # Camera relay ports and discovery mode
 │   ├── hotspot.env                 # Access point SSID/passphrase and interfaces
 │   ├── mosquitto.conf              # Mosquitto TCP (1883) and WebSocket (9001) listeners
 │   ├── mqtt.service                # Avahi mDNS discovery definition
 │   ├── nginx-gateway.conf          # Ingress routing rules & SSL certificate bindings
 │   └── omniroute.env               # OmniRoute gateway configuration & API keys
-├── scripts/                        # Layered system installation & setup scripts
+├── scripts/                        # Automated installation & provisioning scripts
 │   ├── 01_setup_network.sh         # NetworkManager Hotspot & NAT masquerade
 │   ├── 02_setup_broker.sh          # Mosquitto MQTT & Avahi mDNS installer
 │   ├── 03_setup_gateway.sh         # Nginx ingress gateway configuration
@@ -178,9 +178,9 @@ pi-hub/
 
 ## Prerequisites
 
-- **Hardware:** Raspberry Pi 4 Model B or Raspberry Pi 5 (4GB+ RAM recommended for local STT/TTS).
-- **OS:** Raspberry Pi OS (64-bit, Debian Bookworm or Bullseye).
-- **Core Dependencies:**
+* **Hardware:** Raspberry Pi 4 Model B or Raspberry Pi 5 (4GB+ RAM recommended for local STT/TTS).
+* **Operating System:** Raspberry Pi OS (64-bit, Debian Bookworm or Bullseye).
+* **Base Packages:**
   ```bash
   sudo apt-get update && sudo apt-get install -y \
       git curl wget python3 python3-pip python3-venv \
@@ -190,8 +190,6 @@ pi-hub/
 ---
 
 ## Installation & Deployment
-
-Follow these sequential steps to reproduce the complete Pi-Hub environment on a fresh Raspberry Pi:
 
 ### 1. Clone & Configure
 ```bash
@@ -238,7 +236,7 @@ bash services/ai-service/deploy/install-ai-service.sh
 
 ## Configuration Reference
 
-Canonical configuration templates reside in `conf/` and are copied to `/etc/` during deployment.
+Canonical configuration templates reside in `conf/` and are provisioned during deployment.
 
 ### `conf/ai.env`
 ```ini
@@ -298,32 +296,32 @@ Inter-service communication is organized under `hexapod/{device_id}/`:
 | `hexapod/{cam_device_id}/cmd` | `ai-service` / UI | Flashlight brightness, target FPS, exposure, and JPEG quality commands. |
 
 ### Binary Audio Frame Format (`/audio`)
-Audio frames feature a 10-byte little-endian header followed by raw 16-bit 22,050 Hz Mono PCM samples:
-```
-Offset | Type   | Description
--------|--------|------------------------------------------------
-0x00   | uint8  | Magic identifier (0xAA)
-0x01   | uint8  | Action flag (0x00 = Stream Playback)
-0x02   | uint32 | Flow ID (Random session identifier)
-0x06   | uint16 | Sequence index (0 .. Total-1)
-0x08   | uint16 | Total chunks in stream (0 for continuous media)
-0x0A+  | bytes  | Raw PCM audio chunk (up to 4096 bytes)
-```
+
+Audio frames use a 10-byte little-endian header followed by raw 16-bit 22,050 Hz Mono PCM samples:
+
+| Offset | Type | Field Description |
+|:---:|:---:|---|
+| `0x00` | `uint8` | Magic identifier (`0xAA`) |
+| `0x01` | `uint8` | Action flag (`0x00` = Stream Playback) |
+| `0x02` | `uint32` | Flow ID (Random session identifier) |
+| `0x06` | `uint16` | Sequence index (`0 .. Total - 1`) |
+| `0x08` | `uint16` | Total chunks in stream (`0` for continuous streams) |
+| `0x0A+` | `bytes` | Raw PCM audio payload (up to 4096 bytes) |
 
 ---
 
 ## Cognitive Skills & Tool Registry
 
-The `SkillManager` registers smart skills exposed directly to the LLM via OpenAI function calling schemas:
+The `SkillManager` registers procedural skills exposed to the LLM through OpenAI function calling schemas:
 
 | Tool Name | Parameters | Description |
 |---|---|---|
-| `inspect_scene` | `query: str` | Captures a live frame from `/snapshot` and grounds multimodal reasoning. |
-| `get_weather` | `location: str` | Returns temperature, humidity, wind speed, and WMO conditions via Open-Meteo. |
-| `web_search` | `query: str` | Fetches instant web summaries via DuckDuckGo and Wikipedia APIs. |
+| `inspect_scene` | `query: str` | Captures a live frame from `/snapshot` for visual grounding. |
+| `get_weather` | `location: str` | Fetches temperature, humidity, and forecast metrics via Open-Meteo. |
+| `web_search` | `query: str` | Retrieves search summaries via DuckDuckGo and Wikipedia APIs. |
 | `set_timer` | `duration_seconds: int`, `label: str` | Sets an asynchronous timer that triggers audio and voice alarms upon expiration. |
 | `cancel_timer` | `label: str` | Cancels active countdown timers. |
-| `play_music` | `query: str` | Streams YouTube / local audio via `yt-dlp` & `ffmpeg` transcode with auto-ducking. |
+| `play_music` | `query: str` | Streams audio via `yt-dlp` and `ffmpeg` with audio ducking. |
 | `pause_music` | *None* | Pauses active media stream. |
 | `resume_music`| *None* | Resumes active media stream. |
 | `stop_music`  | *None* | Terminates media worker process. |
@@ -333,10 +331,11 @@ The `SkillManager` registers smart skills exposed directly to the LLM via OpenAI
 ## Diagnostics & Verification
 
 ### 1. Hub Diagnostic Status CLI
-Verify all ports, sockets, and background services across the hub:
+Verify active ports, listeners, and background services across the hub:
 ```bash
 python3 scripts/pi-status.py
 ```
+
 *Expected Output:*
 ```text
 ============================================================
@@ -354,12 +353,12 @@ python3 scripts/pi-status.py
 ```
 
 ### 2. Service Regression Self-Test
-Verify action parser expansions, audio sentence chunkers, and prompt sanitation logic:
+Verify action parser matrices, audio sentence chunkers, and prompt sanitation logic:
 ```bash
 /opt/hexapod-ai/venv/bin/python services/ai-service/selftest.py
 ```
 
-### 3. Log Inspection
+### 3. Service Log Streaming
 ```bash
 # Cognitive AI Daemon
 sudo journalctl -u hexapod-ai -f -n 50
@@ -400,4 +399,4 @@ sudo journalctl -u omniroute -f -n 50
 
 ## License
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for complete details.
